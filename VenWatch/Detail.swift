@@ -32,7 +32,7 @@ struct DetailView: View {
                         Button {
                             if type == "movie" { play = PlayReq(type: type, tmdb: id, title: d.s("title")) }
                             else { startNext() }
-                        } label: { Label("Afspelen", systemImage: "play.fill").bold().frame(maxWidth: .infinity).padding(12).background(Color.white).foregroundColor(.black).cornerRadius(8) }
+                        } label: { Label("Afspelen", systemImage: "play.fill").font(.system(size: 17, weight: .bold)).frame(maxWidth: .infinity).padding(12).background(Color.white).foregroundColor(.black).cornerRadius(8) }
                         Button { toggleList() } label: {
                             Image(systemName: status.isEmpty ? "plus" : "checkmark").frame(width: 48, height: 46).background(panel).cornerRadius(8)
                         }

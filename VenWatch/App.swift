@@ -120,7 +120,7 @@ struct ProfilesView: View {
                 Text("Pincode").font(.title2.bold())
                 if !msg.isEmpty { Text(msg).foregroundColor(.orange) }
                 SecureField("Pincode", text: $pin).keyboardType(.numberPad).padding(12).background(panel).cornerRadius(8)
-                Button("OK") { if let p = pinFor { pick(p, pin); pin = "" } }.bold().frame(maxWidth: .infinity).padding(12).background(red).cornerRadius(8).foregroundColor(.white)
+                Button("OK") { if let p = pinFor { pick(p, pin); pin = "" } }.font(.system(size: 17, weight: .bold)).frame(maxWidth: .infinity).padding(12).background(red).cornerRadius(8).foregroundColor(.white)
             }.padding(28).preferredColorScheme(.dark)
         }
     }
