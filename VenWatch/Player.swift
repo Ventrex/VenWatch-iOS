@@ -121,6 +121,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     private var loadToken = UUID()
+    private var searching = false      // zoekt hij nog naar meer bronnen?
 
     func fetch(_ phase: String) async -> JSON? {
         var q = "/api/play/\(type)/\(tmdb)?"
@@ -164,7 +165,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     /// ⚡ Zoals de website: eerst de snelle bronnen (NAS + usenet, ~1 sec) en meteen starten; de rest komt erbij onder "Andere bron"
     func load() async {
         let token = UUID()
-        await MainActor.run { self.loadToken = token; self.status = "Snelste bron zoeken…"; self.lastError = "" }
+        await MainActor.run { self.loadToken = token; self.searching = true; self.status = "Snelste bron zoeken…"; self.lastError = "" }
         func current() async -> Bool { await MainActor.run { self.loadToken == token } }
 
         // Plek om verder te kijken en naam van de aflevering tegelijk ophalen
@@ -205,8 +206,13 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func finishEmpty(_ token: UUID) async {
         await MainActor.run {
-            guard self.loadToken == token, self.sources.isEmpty else { return }
-            self.failed = self.lastError.isEmpty ? "Niets gevonden bij je bronnen. Probeer het zo nog eens of kies Nuvio." : self.lastError
+            guard self.loadToken == token else { return }
+            self.searching = false
+            if self.sources.isEmpty {
+                self.failed = self.lastError.isEmpty ? "Niets gevonden bij je bronnen. Probeer het zo nog eens of kies Nuvio." : self.lastError
+            } else if !self.started && self.idx >= self.sources.count {
+                self.failed = "Geen bron kon worden afgespeeld."
+            }
         }
     }
 
@@ -228,7 +234,9 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     /// Volgende bron als deze niet wil
     func next() {
         idx += 1; player.stop()
-        if idx < sources.count { start() } else { player.media = nil; status = "Andere bronnen zoeken…" ; idx = sources.count }
+        if idx < sources.count { start(); return }
+        player.media = nil; idx = sources.count
+        if searching { status = "Andere bronnen zoeken…" } else { failed = "Geen bron kon worden afgespeeld." }
     }
 
     /// Zelf een andere bron kiezen: verder op dezelfde plek
@@ -344,7 +352,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             if addedSubs.count >= 30 { break }
             add(x, false)
         }
-        if !subsChosen { setSub(-1) }
+        if !subsChosen { setSub(-1); subsChosen = true }   // daarna niet meer zelf aan/uit zetten
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refreshTracks() }
     }
 
@@ -364,6 +372,8 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func setAudio(_ i: Int32) { player.currentAudioTrackIndex = i; audioSel = i }
     func setSub(_ i: Int32) { player.currentVideoSubTitleIndex = i; subSel = i }
+    /// Zelf gekozen in het menu: later binnenkomende ondertitels veranderen dat niet meer
+    func pickSub(_ i: Int32) { subsChosen = true; setSub(i) }
     func setRate(_ r: Float) { rate = r; player.rate = r }
     func seek(_ f: Float) { player.position = f; pos = f }
     func jump(_ secs: Int32) { if secs < 0 { player.jumpBackward(-secs) } else { player.jumpForward(secs) } }
@@ -625,7 +635,7 @@ struct AudioSubsPanel: View {
         VStack(alignment: .leading, spacing: 24) {
             HStack(alignment: .top, spacing: 60) {
                 column("Audio", m.audio, m.audioSel) { m.setAudio($0) }
-                column("Ondertitels", [(Int32(-1), "Uit")] + m.subs, m.subSel) { m.setSub($0) }
+                column("Ondertitels", [(Int32(-1), "Uit")] + m.subs, m.subSel) { m.pickSub($0) }
             }
             HStack(spacing: 10) {
                 Text("Lettergrootte").font(.headline).foregroundColor(.white).padding(.trailing, 6)
