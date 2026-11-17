@@ -246,11 +246,11 @@ struct MainView: View {
 
     @ViewBuilder func page(_ s: Int) -> some View {
         switch s {
-        case 1: HomeView(kind: "tv")
-        case 2: HomeView(kind: "movie")
+        case 1: HomeView(kind: "tv", active: section == 1)
+        case 2: HomeView(kind: "movie", active: section == 2)
         case 3: MyView(me: me, active: section == 3, onSwitch: onSwitch, onLogout: onLogout)
         case 4: SearchView()
-        default: HomeView(kind: nil)
+        default: HomeView(kind: nil, active: section == 0)
         }
     }
 }
@@ -330,9 +330,11 @@ struct ShelfData {
 
 struct HomeView: View {
     let kind: String?          // nil = home, "tv" = series, "movie" = films
+    var active = true
     @State private var shelves: [ShelfData] = []
     @State private var hero: Item?
     @State private var loaded = false
+    @State private var lastLoad = Date.distantPast
 
     var body: some View {
         ScrollView {
@@ -351,11 +353,42 @@ struct HomeView: View {
             }
             .padding(.top, kind == nil ? 8 : 0).padding(.bottom, 40)
         }
-        .task {
-            guard !loaded else { return }
-            if let k = kind { await loadKind(k) } else { await loadHome() }
-            loaded = true
+        .refreshable { await reload() }
+        .task { if !loaded { await reload() } }
+        // Elke keer verversen als je hier terugkomt (na een titel of een ander tabblad): nieuwe tips meteen zichtbaar
+        .onAppear { if loaded && active { Task { await reload(ifOlderThan: 3) } } }
+        .onChange(of: active) { on in if on && loaded { Task { await reload(ifOlderThan: 3) } } }
+    }
+
+    func reload(ifOlderThan secs: Double = 0) async {
+        guard Date().timeIntervalSince(lastLoad) >= secs else { return }
+        lastLoad = Date()
+        if let k = kind { await loadKind(k) } else { await loadHome() }
+        loaded = true
+    }
+
+    /// "Omdat je X keek": meteen tips op basis van wat je net hebt gekeken of op je lijst zette (ook voor een nieuw profiel)
+    static func becauseRows(_ list: [JSON], kind: String?, skip: Set<String>) async -> [ShelfData] {
+        let seeds = list.filter { $0.i("rating") == 0 || $0.i("rating") >= 6 }
+            .filter { kind == nil || $0.s("media_type") == kind }
+            .prefix(3).compactMap { j -> (String, Int, String, String)? in
+                let t = j.s("media_type"), id = j.i("id")
+                return id > 0 && (t == "movie" || t == "tv") ? (t, id, j.s("title"), j.s("status")) : nil
+            }
+        var got: [(Int, ShelfData)] = []
+        await withTaskGroup(of: (Int, ShelfData)?.self) { g in
+            for (i, sd) in seeds.enumerated() {
+                g.addTask {
+                    guard let d = try? await Api.obj("/api/title/\(sd.0)/\(sd.1)") else { return nil }
+                    let items = Item.list(d.a("recommendations") + d.a("similar")).filter { !skip.contains($0.uid) && $0.mine.isEmpty }
+                    guard items.count >= 4 else { return nil }
+                    let verb = sd.3 == "watched" ? "keek" : "op je lijst zette"
+                    return (i, ShelfData(title: "Omdat je \(sd.2) \(verb)", items: Array(items.prefix(20))))
+                }
+            }
+            for await r in g { if let r = r { got.append(r) } }
         }
+        return got.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 
     func loadHome() async {
@@ -363,19 +396,28 @@ struct HomeView: View {
         async let cont = try? Api.obj("/api/continue")
         async let t1 = try? Api.obj("/api/top10?type=movie")
         async let t2 = try? Api.obj("/api/top10?type=tv")
+        async let mine = try? Api.obj("/api/list")
         let h = await home ?? [:]
+        let myList = (await mine)?.a("items") ?? []
+        let skip = Set(Item.list(myList).map { $0.uid })
+        let because = await HomeView.becauseRows(myList, kind: nil, skip: skip)
         let c = Item.list((await cont)?.a("items") ?? [])
-        let rec = Item.list(h.a("recommendations"))
+        var rec = Item.list(h.a("recommendations"))
         var rows: [ShelfData] = []
+        // Bovenaan: tips die passen bij wat je eerder keek (nieuw profiel: op basis van je eerste titels)
+        if rec.isEmpty, let first = because.first { rec = first.items }
+        rows.append(ShelfData(title: "Top-keuzes voor jou", items: rec, style: 3))
         if !c.isEmpty { rows.append(ShelfData(title: "Verder kijken", items: c, style: 2)) }
-        rows.append(ShelfData(title: "Top-keuzes voor jou", items: rec, style: c.isEmpty ? 3 : 0))
+        let recIds = Set(rec.map { $0.uid })
+        for b in because { rows.append(ShelfData(title: b.title, items: b.items.filter { !recIds.contains($0.uid) })) }
         rows.append(ShelfData(title: "Top 10 films in Nederland", items: Item.list((await t1)?.a("items") ?? []), style: 1))
         rows.append(ShelfData(title: "Mijn lijst", items: Item.list(h.a("watchlist"))))
         rows.append(ShelfData(title: "Top 10 series in Nederland", items: Item.list((await t2)?.a("items") ?? []), style: 1))
         for b in h.a("because") { rows.append(ShelfData(title: b.s("title"), items: Item.list(b.a("items")))) }
         for t in h.a("themes") { rows.append(ShelfData(title: "\(t.s("emoji")) \(t.s("name"))".trimmingCharacters(in: .whitespaces), items: Item.list(t.a("items")))) }
         rows.append(ShelfData(title: "Wat je gezin kijkt", items: Item.list(h.a("activity"))))
-        shelves = rows.filter { !$0.items.isEmpty }
+        var seen = Set<String>()
+        shelves = rows.filter { !$0.items.isEmpty && seen.insert($0.title).inserted }
         var feat = rec
         if let b = h.o("billboard"), let bi = Item.from(b) { feat.insert(bi, at: 0) }
         Api.saveFeatured(feat)
@@ -400,6 +442,9 @@ struct HomeView: View {
         rows.append(ShelfData(title: "Top-keuzes voor jou", items: Array(picks.prefix(20))))
         rows.append(ShelfData(title: k == "tv" ? "Top 10 series in Nederland" : "Top 10 films in Nederland", items: topItems, style: 1))
         rows.append(ShelfData(title: "Mijn lijst", items: Item.list(h.a("watchlist")).filter { $0.type == k }))
+        let myList = (try? await Api.obj("/api/list"))?.a("items") ?? []
+        let mine2 = await HomeView.becauseRows(myList, kind: k, skip: Set(Item.list(myList).map { $0.uid }))
+        rows.insert(contentsOf: mine2, at: min(rows.count, c.isEmpty ? 1 : 2))
         for b in h.a("because") {
             let it = Item.list(b.a("items")).filter { $0.type == k }
             if it.count >= 4 { rows.append(ShelfData(title: b.s("title"), items: it)) }
