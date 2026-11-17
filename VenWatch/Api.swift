@@ -97,6 +97,7 @@ struct Item: Hashable {
     var serviceURL: String? = nil
     var match: Int? = nil
     var age: String = ""
+    var mine: String = ""        // watchlist / watched / leeg
     var uid: String { "\(type)-\(id)" }
 
     static func from(_ j: JSON) -> Item? {
@@ -108,6 +109,7 @@ struct Item: Hashable {
         if j["match"] is NSNumber { it.match = j.i("match") }
         it.reason = j.s("reason")
         it.age = j.s("age_label")
+        it.mine = j.s("my_status")
         if let pl = j.o("play") {
             let s = pl.i("s"), e = pl.i("e")
             if s > 0 { it.season = s }

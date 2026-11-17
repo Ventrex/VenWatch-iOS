@@ -248,7 +248,7 @@ struct MainView: View {
         switch s {
         case 1: HomeView(kind: "tv")
         case 2: HomeView(kind: "movie")
-        case 3: MyView(me: me, onSwitch: onSwitch, onLogout: onLogout)
+        case 3: MyView(me: me, active: section == 3, onSwitch: onSwitch, onLogout: onLogout)
         case 4: SearchView()
         default: HomeView(kind: nil)
         }
@@ -480,6 +480,7 @@ struct SearchView: View {
 
 struct MyView: View {
     let me: JSON
+    var active = true
     var onSwitch: () -> Void
     var onLogout: () -> Void
     @Environment(\.horizontalSizeClass) var hs
@@ -518,7 +519,8 @@ struct MyView: View {
                 }.padding(.horizontal, edge(hs)).foregroundColor(.white)
             }.padding(.bottom, 40)
         }
-        .task {
+        .task(id: active) {
+            guard active else { return }   // elke keer verversen als je hier terugkomt
             async let a = try? Api.obj("/api/list?status=watchlist")
             async let b = try? Api.obj("/api/list?status=watched")
             watchlist = Item.list((await a)?.a("items") ?? [])

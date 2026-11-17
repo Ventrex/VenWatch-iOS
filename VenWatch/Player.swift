@@ -576,7 +576,8 @@ struct EpisodesPanel: View {
                     HStack(alignment: .top, spacing: 14) {
                         ForEach(Array(eps.enumerated()), id: \.offset) { _, e in
                             let isCur = season == m.season && e.i("n") == m.episode
-                            Button { m.playEpisode(season, e.i("n")); done() } label: {
+                            let aired = e["aired"] as? Bool ?? true
+                            Button { if aired { m.playEpisode(season, e.i("n")); done() } } label: {
                                 VStack(alignment: .leading, spacing: 8) {
                                     ZStack(alignment: .bottom) {
                                         Img(url: Api.img(e.s("still"), "w300")).frame(width: 240, height: 135).clipped()
@@ -586,8 +587,8 @@ struct EpisodesPanel: View {
                                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white, lineWidth: isCur ? 3 : 0))
                                     Text("\(e.i("n")). \(e.s("name"))").font(.subheadline.bold()).foregroundColor(.white).lineLimit(1)
                                     Text(e.s("overview")).font(.caption).foregroundColor(soft).lineLimit(3).frame(width: 240, alignment: .leading)
-                                }.frame(width: 240)
-                            }.buttonStyle(.plain).id(e.i("n"))
+                                }.frame(width: 240).opacity(aired ? 1 : 0.45)
+                            }.buttonStyle(.plain).disabled(!aired).id(e.i("n"))
                         }
                     }.padding(.horizontal, 4)
                 }

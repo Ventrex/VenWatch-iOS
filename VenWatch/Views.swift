@@ -322,6 +322,7 @@ struct Billboard: View {
         .frame(height: h)
         .contentShape(Rectangle())
         .onTapGesture { open = true }
+        .onAppear { onList = !item.mine.isEmpty }
         .background(
             NavigationLink(isActive: $open) { DetailView(type: item.type, id: item.id) } label: { EmptyView() }.hidden()
         )
