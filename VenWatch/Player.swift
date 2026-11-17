@@ -220,7 +220,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         guard idx < sources.count else { failed = "Geen bron kon worden afgespeeld."; return }
         let s = sources[idx]
         status = "Bron \(idx + 1) van \(sources.count)… \(s.quality) \(s.size)".trimmingCharacters(in: .whitespaces)
-        started = false; tried = Date(); autoPicked = false; subsChosen = false
+        started = false; tried = Date(); autoPicked = false; subsChosen = false; userPicked = false
         tracksReady = false; embeddedSubs = []; slaveLabels = []; addedSubs = []
         audio = []; subs = []
         player.media = VLCMedia(url: s.url)
@@ -344,7 +344,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             slaveLabels.append(x.1.isEmpty ? (x.2.isEmpty ? "Ondertitel" : x.2.uppercased()) : x.1)
             player.addPlaybackSlave(x.0, type: .subtitle, enforce: on)
         }
-        if !subsChosen, let want = wantedSubLang, let hit = all.first(where: { $0.2.lowercased() == want.lowercased() }) {
+        if !subsChosen, !userPicked, let want = wantedSubLang, let hit = all.first(where: { $0.2.lowercased() == want.lowercased() }) {
             add(hit, true)
             subsChosen = true
         }
@@ -352,7 +352,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             if addedSubs.count >= 30 { break }
             add(x, false)
         }
-        if !subsChosen { setSub(-1); subsChosen = true }   // daarna niet meer zelf aan/uit zetten
+        if !subsChosen && !userPicked { setSub(-1) }   // gewenste taal nog niet binnen: uit, en blijven wachten
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refreshTracks() }
     }
 
@@ -373,7 +373,8 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     func setAudio(_ i: Int32) { player.currentAudioTrackIndex = i; audioSel = i }
     func setSub(_ i: Int32) { player.currentVideoSubTitleIndex = i; subSel = i }
     /// Zelf gekozen in het menu: later binnenkomende ondertitels veranderen dat niet meer
-    func pickSub(_ i: Int32) { subsChosen = true; setSub(i) }
+    func pickSub(_ i: Int32) { userPicked = true; setSub(i) }
+    private var userPicked = false
     func setRate(_ r: Float) { rate = r; player.rate = r }
     func seek(_ f: Float) { player.position = f; pos = f }
     func jump(_ secs: Int32) { if secs < 0 { player.jumpBackward(-secs) } else { player.jumpForward(secs) } }
