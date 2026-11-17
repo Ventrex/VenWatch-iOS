@@ -120,46 +120,93 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         await load()
     }
 
-    func load() async {
+    private var loadToken = UUID()
+
+    func fetch(_ phase: String) async -> JSON? {
         var q = "/api/play/\(type)/\(tmdb)?"
         if type == "tv", let s = season, let e = episode { q += "s=\(s)&e=\(e)&" }
-        q += "phase=full&maxgb=\(Api.maxGb)"
-        do {
-            let j = try await Api.obj(q)
-            var list: [JSON] = j.a("streams")
-            list.sort { $0.d("order") < $1.d("order") }
-            let cap = Double(Api.maxGb)
-            let fits = list.filter { let g = gbOf($0.s("size")); return g <= 0 || g <= cap }
-            let huge = list.filter { gbOf($0.s("size")) > cap }
-            let srcs: [Source] = (fits + huge).compactMap { s in
-                guard let u = URL(string: s.s("url")) else { return nil }
-                let ss: [(URL, String, String)] = s.a("subtitles").compactMap { z in Api.abs(z.s("src")).map { ($0, z.s("label"), z.s("lang")) } }
-                return Source(url: u, label: s.s("label"), size: s.s("size"), quality: s.s("quality"), info: s.s("info"), key: s.s("key"), subs: ss)
-            }
-            let subsList: [(URL, String, String)] = j.a("subtitles").compactMap { s in Api.abs(s.s("src")).map { ($0, s.s("label"), s.s("lang")) } }
-            let seas: [(Int, Int)] = j.a("seasons").map { ($0.i("n"), $0.i("episodes")) }
-            var start = 0
-            if let w = try? await Api.obj("/api/watchpos/\(type)/\(tmdb)"), let p = w.o("pos"), p.d("pos") > 30,
-               p.d("dur") == 0 || p.d("pos") < p.d("dur") * 0.95,
-               type == "movie" || (p.i("season") == season && p.i("episode") == episode) { start = Int(p.d("pos") * 1000) }
-            var name = ""
-            if type == "tv", let s = season, let e = episode,
-               let sj = try? await Api.obj("/api/title/tv/\(tmdb)/season/\(s)") {
-                name = sj.a("episodes").first(where: { $0.i("n") == e })?.s("name") ?? ""
-            }
-            await MainActor.run {
-                self.sources = srcs
-                self.subtitleURLs = subsList
-                self.seasons = seas
-                self.origLang = j.s("language")
-                self.backdrop = j.s("backdrop").isEmpty ? nil : j.s("backdrop")
-                self.epName = name
-                self.startMs = start
-                self.idx = 0
-                if srcs.isEmpty { self.failed = "Niets gevonden bij je bronnen." } else { self.start() }
-            }
-        } catch {
-            await MainActor.run { self.failed = error.localizedDescription }
+        q += "phase=\(phase)&maxgb=\(Api.maxGb)"
+        do { return try await Api.obj(q) }
+        catch { await MainActor.run { if self.sources.isEmpty { self.lastError = error.localizedDescription } }; return nil }
+    }
+    private var lastError = ""
+
+    func parse(_ j: JSON) -> [Source] {
+        var list: [JSON] = j.a("streams")
+        list.sort { $0.d("order") < $1.d("order") }
+        let cap = Double(Api.maxGb)
+        let fits = list.filter { let g = gbOf($0.s("size")); return g <= 0 || g <= cap }
+        let huge = list.filter { gbOf($0.s("size")) > cap }
+        return (fits + huge).compactMap { s in
+            guard let u = URL(string: s.s("url")) else { return nil }
+            let ss: [(URL, String, String)] = s.a("subtitles").compactMap { z in Api.abs(z.s("src")).map { ($0, z.s("label"), z.s("lang")) } }
+            return Source(url: u, label: s.s("label"), size: s.s("size"), quality: s.s("quality"), info: s.s("info"), key: s.s("key"), subs: ss)
+        }
+    }
+
+    /// Nieuwe bronnen achteraan toevoegen (wat al speelt blijft staan)
+    func merge(_ j: JSON) {
+        let have = Set(sources.map { $0.url })
+        let fresh = parse(j).filter { !have.contains($0.url) }
+        if !fresh.isEmpty { sources.append(contentsOf: fresh) }
+        let subsList: [(URL, String, String)] = j.a("subtitles").compactMap { s in Api.abs(s.s("src")).map { ($0, s.s("label"), s.s("lang")) } }
+        let known = Set(subtitleURLs.map { $0.0 })
+        let newSubs = subsList.filter { !known.contains($0.0) }
+        if !newSubs.isEmpty {
+            subtitleURLs.append(contentsOf: newSubs)
+            if started && tracksReady { addExternalSubs() }
+        }
+        if origLang.isEmpty { origLang = j.s("language") }
+        if backdrop == nil, !j.s("backdrop").isEmpty { backdrop = j.s("backdrop") }
+        if seasons.isEmpty { seasons = j.a("seasons").map { ($0.i("n"), $0.i("episodes")) } }
+    }
+
+    /// ⚡ Zoals de website: eerst de snelle bronnen (NAS + usenet, ~1 sec) en meteen starten; de rest komt erbij onder "Andere bron"
+    func load() async {
+        let token = UUID()
+        await MainActor.run { self.loadToken = token; self.status = "Snelste bron zoeken…"; self.lastError = "" }
+        func current() async -> Bool { await MainActor.run { self.loadToken == token } }
+
+        // Plek om verder te kijken en naam van de aflevering tegelijk ophalen
+        async let posJ = try? Api.obj("/api/watchpos/\(type)/\(tmdb)")
+        async let seasonJ: JSON? = (type == "tv" && season != nil) ? (try? Api.obj("/api/title/tv/\(tmdb)/season/\(season ?? 1)")) : nil
+        let quick = await fetch("quick")
+        guard await current() else { return }
+        var start = 0
+        if let p = (await posJ)?.o("pos"), p.d("pos") > 30, p.d("dur") == 0 || p.d("pos") < p.d("dur") * 0.95,
+           type == "movie" || (p.i("season") == season && p.i("episode") == episode) { start = Int(p.d("pos") * 1000) }
+        let name = (await seasonJ)?.a("episodes").first(where: { $0.i("n") == episode })?.s("name") ?? ""
+        let hasRelay = quick?.b("has_relay") ?? true
+        await MainActor.run {
+            self.startMs = start
+            self.epName = name
+            if let q = quick { self.merge(q) }
+            if !self.sources.isEmpty { self.start() } else { self.status = "Zoeken bij je bronnen…" }
+        }
+
+        // Daarna de gewone zoektocht en (via VenRelay) alles
+        let full = await fetch("full")
+        guard await current() else { return }
+        let needMore = await MainActor.run { () -> Bool in
+            if let f = full { self.merge(f) }
+            if !self.started && self.failed.isEmpty && self.player.media == nil && self.idx < self.sources.count { self.start() }
+            if self.sources.isEmpty { self.status = "Nog verder zoeken (torrents en andere bronnen)…" }
+            return true
+        }
+        guard needMore, hasRelay else { await finishEmpty(token); return }
+        let more = await fetch("more")
+        guard await current() else { return }
+        await MainActor.run {
+            if let m = more { self.merge(m) }
+            if !self.started && self.failed.isEmpty && self.player.media == nil && self.idx < self.sources.count { self.start() }
+        }
+        await finishEmpty(token)
+    }
+
+    func finishEmpty(_ token: UUID) async {
+        await MainActor.run {
+            guard self.loadToken == token, self.sources.isEmpty else { return }
+            self.failed = self.lastError.isEmpty ? "Niets gevonden bij je bronnen. Probeer het zo nog eens of kies Nuvio." : self.lastError
         }
     }
 
@@ -168,6 +215,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         let s = sources[idx]
         status = "Bron \(idx + 1) van \(sources.count)… \(s.quality) \(s.size)".trimmingCharacters(in: .whitespaces)
         started = false; tried = Date(); autoPicked = false; subsChosen = false
+        tracksReady = false; embeddedSubs = []; slaveLabels = []; addedSubs = []
         audio = []; subs = []
         player.media = VLCMedia(url: s.url)
         player.delegate = self
@@ -178,7 +226,10 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     /// Volgende bron als deze niet wil
-    func next() { idx += 1; player.stop(); start() }
+    func next() {
+        idx += 1; player.stop()
+        if idx < sources.count { start() } else { player.media = nil; status = "Andere bronnen zoeken…" ; idx = sources.count }
+    }
 
     /// Zelf een andere bron kiezen: verder op dezelfde plek
     func use(_ i: Int) {
@@ -198,7 +249,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             case .ended:
                 if self.started { self.finished() } else { self.next() }
             case .stopped:
-                if !self.started && Date().timeIntervalSince(self.tried) > 1 && self.failed.isEmpty && self.idx < self.sources.count { self.next() }
+                if !self.started && self.player.media != nil && Date().timeIntervalSince(self.tried) > 1 && self.failed.isEmpty && self.idx < self.sources.count { self.next() }
             default: break
             }
         }
@@ -224,17 +275,30 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         // Eerst kijken wat er in het bestand zit, dan pas losse ondertitels toevoegen
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             self.refreshTracks()
+            self.tracksReady = true
             self.autoPick()
             self.addExternalSubs()
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.refreshTracks() }
         }
     }
 
+    var tracksReady = false
+    var embeddedSubs = Set<Int32>()     // ondertitels die in het bestand zelf zitten
+    var slaveLabels: [String] = []      // namen van de losse ondertitels, in de volgorde waarin ze zijn toegevoegd
+    var addedSubs = Set<URL>()
+
     func refreshTracks() {
         let an = (player.audioTrackNames as? [String]) ?? [], ai = (player.audioTrackIndexes as? [NSNumber]) ?? []
         audio = zip(ai, an).map { ($0.int32Value, $1) }.filter { $0.0 >= 0 }
         let sn = (player.videoSubTitlesNames as? [String]) ?? [], si = (player.videoSubTitlesIndexes as? [NSNumber]) ?? []
-        subs = zip(si, sn).map { ($0.int32Value, $1) }.filter { $0.0 >= 0 }
+        var list = zip(si, sn).map { ($0.int32Value, $1) }.filter { $0.0 >= 0 }
+        if !tracksReady { embeddedSubs = Set(list.map { $0.0 }) }
+        // VLC noemt losse ondertitels "Track 1" e.d.: geef ze de echte taalnaam
+        let extraIds = list.map { $0.0 }.filter { !embeddedSubs.contains($0) }.sorted()
+        for (k, id) in extraIds.enumerated() where k < slaveLabels.count {
+            if let i = list.firstIndex(where: { $0.0 == id }) { list[i].1 = slaveLabels[k] }
+        }
+        subs = list
         audioSel = player.currentAudioTrackIndex
         subSel = player.currentVideoSubTitleIndex
     }
@@ -266,19 +330,22 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     /// Losse ondertitels (van de bron en OpenSubtitles): de gewenste taal eerst en meteen aan, de rest alleen in het menu
     func addExternalSubs() {
         let extra = idx < sources.count ? sources[idx].subs : []
-        let all = extra + subtitleURLs
-        var used = Set<URL>()
+        let all = (extra + subtitleURLs).filter { !addedSubs.contains($0.0) }
+        func add(_ x: (URL, String, String), _ on: Bool) {
+            addedSubs.insert(x.0)
+            slaveLabels.append(x.1.isEmpty ? (x.2.isEmpty ? "Ondertitel" : x.2.uppercased()) : x.1)
+            player.addPlaybackSlave(x.0, type: .subtitle, enforce: on)
+        }
         if !subsChosen, let want = wantedSubLang, let hit = all.first(where: { $0.2.lowercased() == want.lowercased() }) {
-            player.addPlaybackSlave(hit.0, type: .subtitle, enforce: true)
-            used.insert(hit.0)
+            add(hit, true)
             subsChosen = true
         }
-        for x in all where !used.contains(x.0) {
-            if used.count >= 10 { break }
-            used.insert(x.0)
-            player.addPlaybackSlave(x.0, type: .subtitle, enforce: false)
+        for x in all where !addedSubs.contains(x.0) {
+            if addedSubs.count >= 30 { break }
+            add(x, false)
         }
         if !subsChosen { setSub(-1) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.refreshTracks() }
     }
 
     /// Lettergrootte van de ondertitels
@@ -305,7 +372,8 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         save()
         player.stop()
         season = s; episode = e; epName = ""
-        started = false; failed = ""; status = "Bronnen zoeken…"; startMs = 0; sources = []
+        started = false; failed = ""; status = "Snelste bron zoeken…"; startMs = 0; sources = []; idx = 0
+        subtitleURLs = []; player.media = nil
         Task { await load() }
     }
 
