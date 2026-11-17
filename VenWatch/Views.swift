@@ -16,6 +16,27 @@ extension Color {
     }
 }
 
+/// Ligt aflevering a na aflevering b?
+func later(_ a: (Int, Int), than b: (Int, Int)) -> Bool { a.0 != b.0 ? a.0 > b.0 : a.1 > b.1 }
+
+/// Welke aflevering is echt de volgende? Een oude halve aflevering telt niet als je al verder bent (bv. via Nuvio).
+/// Geeft ook het logo van de serie terug voor het laadscherm.
+func resolveEpisode(_ id: Int, _ s: Int?, _ e: Int?) async -> (Int, Int, String?)? {
+    let d = (try? await Api.obj("/api/title/tv/\(id)")) ?? [:]
+    let logo = d.o("logo")?.s("path")
+    let next = d.o("progress")?.o("next")
+    let nx: (Int, Int)? = next.flatMap { n in !n.b("done") && n.i("season") > 0 && n.i("episode") > 0 ? (n.i("season"), n.i("episode")) : nil }
+    if let s = s, let e = e {
+        if let n = nx, later(n, than: (s, e)) {
+            _ = try? await Api.delete("/api/watchpos/tv/\(id)")
+            return (n.0, n.1, logo)
+        }
+        return (s, e, logo)
+    }
+    if let n = nx { return (n.0, n.1, logo) }
+    return nil
+}
+
 /// Zijmarge, net als de rijen op een tv/tablet
 func edge(_ hs: UserInterfaceSizeClass?) -> CGFloat { hs == .regular ? 40 : 14 }
 
@@ -242,7 +263,12 @@ struct FeaturedRow: View {
         if continueRow, let s = it.serviceURL, let u = URL(string: s) { UIApplication.shared.open(u); return }
         if continueRow || forcePlay {
             if it.type == "movie" { play = PlayReq(type: "movie", tmdb: it.id, title: it.title); return }
-            if let s = it.season, let e = it.episode { play = PlayReq(type: "tv", tmdb: it.id, title: it.title, season: s, episode: e); return }
+            Task {
+                if let r = await resolveEpisode(it.id, it.season, it.episode) {
+                    play = PlayReq(type: "tv", tmdb: it.id, title: it.title, season: r.0, episode: r.1, logo: r.2)
+                } else { open = it }
+            }
+            return
         }
         open = it
     }

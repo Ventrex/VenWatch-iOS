@@ -488,6 +488,8 @@ struct MyView: View {
     @State private var watched: [Item] = []
     @State private var liked: [Item] = []
     @State private var gb = Double(Api.maxGb)
+    @State private var subLang = SubPrefs.lang
+    @State private var subSize = SubPrefs.size
 
     var body: some View {
         ScrollView {
@@ -512,6 +514,17 @@ struct MyView: View {
                         .onChange(of: gb) { Api.maxGb = Int($0) }
                         .padding(.horizontal, edge(hs))
                     Text("Bronnen groter dan dit komen achteraan.").font(.caption).foregroundColor(soft).padding(.horizontal, edge(hs))
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    RowTitle(text: "Ondertitels")
+                    Picker("Taal", selection: $subLang) {
+                        Text("Originele taal").tag("orig"); Text("Nederlands").tag("nl"); Text("Uit").tag("off")
+                    }.pickerStyle(.segmented).frame(maxWidth: 420).padding(.horizontal, edge(hs))
+                    .onChange(of: subLang) { SubPrefs.lang = $0 }
+                    Picker("Grootte", selection: $subSize) {
+                        ForEach(0..<3, id: \.self) { Text(SubPrefs.sizeNames[$0]).tag($0) }
+                    }.pickerStyle(.segmented).frame(maxWidth: 420).padding(.horizontal, edge(hs))
+                    .onChange(of: subSize) { SubPrefs.size = $0 }
                 }
                 VStack(alignment: .leading, spacing: 14) {
                     Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }

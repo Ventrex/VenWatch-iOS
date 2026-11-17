@@ -168,7 +168,7 @@ struct DetailView: View {
             }
             ForEach(Array(episodes.enumerated()), id: \.offset) { _, e in
                 EpisodeRow(e: e, resumePct: resumePct(e.i("n"))) {
-                    if e["aired"] as? Bool ?? true { play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n")) }
+                    if e["aired"] as? Bool ?? true { play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), logo: logoPath) }
                 }
             }
         }
@@ -198,17 +198,25 @@ struct DetailView: View {
     func loadResume() async {
         if let w = try? await Api.obj("/api/watchpos/\(type)/\(id)"), let p = w.o("pos"), p.d("pos") > 30, p.d("dur") == 0 || p.d("pos") < p.d("dur") * 0.95 { resume = p }
         else { resume = nil }
+        // Een oude halve aflevering telt niet als je al verder bent (bv. via Nuvio gekeken)
+        if type == "tv", let r = resume, let n = d.o("progress")?.o("next"), !n.b("done"),
+           later((n.i("season"), n.i("episode")), than: (r.i("season"), r.i("episode"))) {
+            resume = nil
+            _ = try? await Api.delete("/api/watchpos/tv/\(id)")
+        }
     }
 
+    var logoPath: String? { d.o("logo").map { $0.s("path") }.flatMap { $0.isEmpty ? nil : $0 } }
+
     func startPlay() {
-        if type == "movie" { play = PlayReq(type: "movie", tmdb: id, title: title); return }
+        if type == "movie" { play = PlayReq(type: "movie", tmdb: id, title: title, logo: logoPath); return }
         if let r = resume, r.i("season") > 0, r.i("episode") > 0 {
-            play = PlayReq(type: "tv", tmdb: id, title: title, season: r.i("season"), episode: r.i("episode")); return
+            play = PlayReq(type: "tv", tmdb: id, title: title, season: r.i("season"), episode: r.i("episode"), logo: logoPath); return
         }
         if let n = d.o("progress")?.o("next"), !n.b("done"), n.i("season") > 0, n.i("episode") > 0 {
-            play = PlayReq(type: "tv", tmdb: id, title: title, season: n.i("season"), episode: n.i("episode")); return
+            play = PlayReq(type: "tv", tmdb: id, title: title, season: n.i("season"), episode: n.i("episode"), logo: logoPath); return
         }
-        play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: episodes.first?.i("n") ?? 1)
+        play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: episodes.first?.i("n") ?? 1, logo: logoPath)
     }
 
     func toggleList() {

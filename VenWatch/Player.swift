@@ -7,6 +7,38 @@ struct PlayReq: Identifiable {
     let type: String, tmdb: Int, title: String
     var season: Int? = nil
     var episode: Int? = nil
+    var logo: String? = nil
+}
+
+/// Instellingen voor ondertitels
+enum SubPrefs {
+    /// "orig" = taal van de film/serie (standaard), "nl" = Nederlands, "off" = uit
+    static var lang: String {
+        get { UserDefaults.standard.string(forKey: "subpref") ?? "orig" }
+        set { UserDefaults.standard.set(newValue, forKey: "subpref") }
+    }
+    /// 0 klein · 1 normaal · 2 groot
+    static var size: Int {
+        get { UserDefaults.standard.object(forKey: "subsize") as? Int ?? 0 }
+        set { UserDefaults.standard.set(newValue, forKey: "subsize") }
+    }
+    static let sizeNames = ["Klein", "Normaal", "Groot"]
+    /// VLC: hoe hoger het getal, hoe kleiner de letters
+    static var vlcSize: Int { [26, 21, 17][min(2, max(0, size))] }
+}
+
+/// Taalcode → woorden waarmee VLC een ingebakken spoor kan noemen
+func langWords(_ code: String) -> [String] {
+    let m: [String: [String]] = [
+        "en": ["english", "engels", "eng"], "nl": ["dutch", "nederlands", "nld", "dut", "[nl]"],
+        "fr": ["french", "frans", "fre", "fra"], "de": ["german", "duits", "ger", "deu"],
+        "es": ["spanish", "spaans", "spa"], "it": ["italian", "italiaans", "ita"],
+        "ja": ["japanese", "japans", "jpn"], "ko": ["korean", "koreaans", "kor"],
+        "pt": ["portuguese", "portugees", "por"], "sv": ["swedish", "zweeds", "swe"],
+        "da": ["danish", "deens", "dan"], "no": ["norwegian", "noors", "nor"],
+        "zh": ["chinese", "chinees", "chi", "zho"], "ru": ["russian", "russisch", "rus"],
+    ]
+    return m[code.lowercased()] ?? (code.isEmpty ? [] : [code.lowercased()])
 }
 
 struct Source {
@@ -16,7 +48,7 @@ struct Source {
     let quality: String
     let info: String
     let key: String
-    let subs: [(URL, String)]
+    let subs: [(URL, String, String)]   // adres, naam, taalcode
 }
 
 func gbOf(_ s: String) -> Double {
@@ -54,11 +86,12 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published var episode: Int?
     @Published var epName = ""
     @Published var backdrop: String?
+    @Published var logo: String?
 
     var type = "movie"
     var tmdb = 0
     var title = ""
-    var subtitleURLs: [(URL, String)] = []
+    var subtitleURLs: [(URL, String, String)] = []
     var seasons: [(Int, Int)] = []        // seizoen, aantal afleveringen
     var origLang = ""
     var startMs = 0
@@ -83,7 +116,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     func begin(_ r: PlayReq) async {
         type = r.type; tmdb = r.tmdb; title = r.title
-        await MainActor.run { self.season = r.season; self.episode = r.episode }
+        await MainActor.run { self.season = r.season; self.episode = r.episode; self.logo = r.logo }
         await load()
     }
 
@@ -100,10 +133,10 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             let huge = list.filter { gbOf($0.s("size")) > cap }
             let srcs: [Source] = (fits + huge).compactMap { s in
                 guard let u = URL(string: s.s("url")) else { return nil }
-                let ss: [(URL, String)] = s.a("subtitles").compactMap { z in Api.abs(z.s("src")).map { ($0, z.s("label")) } }
+                let ss: [(URL, String, String)] = s.a("subtitles").compactMap { z in Api.abs(z.s("src")).map { ($0, z.s("label"), z.s("lang")) } }
                 return Source(url: u, label: s.s("label"), size: s.s("size"), quality: s.s("quality"), info: s.s("info"), key: s.s("key"), subs: ss)
             }
-            let subsList: [(URL, String)] = j.a("subtitles").compactMap { s in Api.abs(s.s("src")).map { ($0, s.s("label")) } }
+            let subsList: [(URL, String, String)] = j.a("subtitles").compactMap { s in Api.abs(s.s("src")).map { ($0, s.s("label"), s.s("lang")) } }
             let seas: [(Int, Int)] = j.a("seasons").map { ($0.i("n"), $0.i("episodes")) }
             var start = 0
             if let w = try? await Api.obj("/api/watchpos/\(type)/\(tmdb)"), let p = w.o("pos"), p.d("pos") > 30,
@@ -134,10 +167,11 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         guard idx < sources.count else { failed = "Geen bron kon worden afgespeeld."; return }
         let s = sources[idx]
         status = "Bron \(idx + 1) van \(sources.count)… \(s.quality) \(s.size)".trimmingCharacters(in: .whitespaces)
-        started = false; tried = Date(); autoPicked = false
+        started = false; tried = Date(); autoPicked = false; subsChosen = false
         audio = []; subs = []
         player.media = VLCMedia(url: s.url)
         player.delegate = self
+        applySubSize()
         player.play()
         if rate != 1 { player.rate = rate }
         if startMs > 0 { player.time = VLCTime(int: Int32(startMs)) }
@@ -156,9 +190,9 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     func mediaPlayerStateChanged(_ n: Notification) {
         DispatchQueue.main.async {
             switch self.player.state {
-            case .playing:
-                self.playing = true
-                if !self.started { self.started = true; self.setup() }
+            case .playing, .buffering:
+                self.playing = self.player.isPlaying
+                if !self.started && self.player.isPlaying && self.player.time.intValue > 0 { self.started = true; self.setup() }
             case .paused: self.playing = false
             case .error: self.next()
             case .ended:
@@ -175,6 +209,8 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             self.pos = self.player.position
             self.curSec = Int(self.player.time.intValue / 1000)
             self.lenSec = Int((self.player.media?.length.intValue ?? 0) / 1000)
+            // Sommige bronnen melden nooit "playing": loopt de tijd, dan speelt hij
+            if !self.started && self.player.time.intValue > 0 { self.started = true; self.playing = true; self.setup() }
             if Date().timeIntervalSince(self.lastSave) > 20 { self.lastSave = Date(); self.save() }
         }
     }
@@ -185,10 +221,13 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     func setup() {
-        let extra = idx < sources.count ? sources[idx].subs : []
-        for (u, _) in (extra + subtitleURLs).prefix(10) { player.addPlaybackSlave(u, type: .subtitle, enforce: false) }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refreshTracks(); self.autoPick() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { self.refreshTracks() }
+        // Eerst kijken wat er in het bestand zit, dan pas losse ondertitels toevoegen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            self.refreshTracks()
+            self.autoPick()
+            self.addExternalSubs()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.refreshTracks() }
+        }
     }
 
     func refreshTracks() {
@@ -200,19 +239,60 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         subSel = player.currentVideoSubTitleIndex
     }
 
-    /// Voorkeur: Nederlands gesproken > oorspronkelijke taal > Engels. Niet Nederlands? Dan Nederlandse ondertitels.
+    func find(_ list: [(Int32, String)], _ keys: [String]) -> Int32? {
+        list.first { a in keys.contains { a.1.lowercased().contains($0) } }?.0
+    }
+
+    /// De taal waarin je ondertitels wilt (nil = uit)
+    var wantedSubLang: String? {
+        switch SubPrefs.lang {
+        case "off": return nil
+        case "nl": return "nl"
+        default: return origLang.isEmpty ? "en" : origLang
+        }
+    }
+
+    /// Audio: Nederlands gesproken > oorspronkelijke taal > Engels. Ondertitels: wat je hebt ingesteld (standaard de originele taal).
     func autoPick() {
         guard !autoPicked else { return }
         autoPicked = true
-        func find(_ list: [(Int32, String)], _ keys: [String]) -> Int32? {
-            list.first { a in keys.contains { a.1.lowercased().contains($0) } }?.0
+        let dutchAudio = find(audio, langWords("nl"))
+        if let t = dutchAudio ?? find(audio, langWords(origLang)) ?? find(audio, langWords("en")) { setAudio(t) }
+        if let want = wantedSubLang, let t = find(subs, langWords(want)) { setSub(t); subsChosen = true }
+        else { setSub(-1) }
+    }
+    private var subsChosen = false
+
+    /// Losse ondertitels (van de bron en OpenSubtitles): de gewenste taal eerst en meteen aan, de rest alleen in het menu
+    func addExternalSubs() {
+        let extra = idx < sources.count ? sources[idx].subs : []
+        let all = extra + subtitleURLs
+        var used = Set<URL>()
+        if !subsChosen, let want = wantedSubLang, let hit = all.first(where: { $0.2.lowercased() == want.lowercased() }) {
+            player.addPlaybackSlave(hit.0, type: .subtitle, enforce: true)
+            used.insert(hit.0)
+            subsChosen = true
         }
-        let nl = ["dutch", "nederlands", "[nl]", "nld", "dut"]
-        let dutchAudio = find(audio, nl)
-        if let t = dutchAudio ?? (origLang.isEmpty ? nil : find(audio, [origLang.lowercased()])) ?? find(audio, ["english", "engels"]) {
-            setAudio(t)
+        for x in all where !used.contains(x.0) {
+            if used.count >= 10 { break }
+            used.insert(x.0)
+            player.addPlaybackSlave(x.0, type: .subtitle, enforce: false)
         }
-        if dutchAudio == nil, let s = find(subs, nl + ["nl "]) { setSub(s) }
+        if !subsChosen { setSub(-1) }
+    }
+
+    /// Lettergrootte van de ondertitels
+    func applySubSize() {
+        let sel = NSSelectorFromString("setTextRendererFontSize:")
+        if player.responds(to: sel) { player.perform(sel, with: NSNumber(value: SubPrefs.vlcSize)) }
+    }
+    func setSubSize(_ i: Int) {
+        SubPrefs.size = i
+        applySubSize()
+        // Even het spoor opnieuw kiezen zodat de nieuwe grootte meteen zichtbaar is
+        let cur = player.currentVideoSubTitleIndex
+        if cur >= 0 { player.currentVideoSubTitleIndex = -1; player.currentVideoSubTitleIndex = cur }
+        objectWillChange.send()
     }
 
     func setAudio(_ i: Int32) { player.currentAudioTrackIndex = i; audioSel = i }
@@ -317,9 +397,12 @@ struct PlayerScreen: View {
     var loading: some View {
         ZStack {
             if let b = m.backdrop { Color.clear.overlay(Img(url: Api.img(b, "w1280"))).clipped().opacity(0.3).ignoresSafeArea() }
-            VStack(spacing: 14) {
+            VStack(spacing: 18) {
+                if let l = m.logo {
+                    Img(url: Api.img(l, "w500"), fit: true).frame(maxWidth: 320, maxHeight: 120).shadow(color: .black.opacity(0.7), radius: 8)
+                }
                 if m.failed.isEmpty { ProgressView().tint(red).scaleEffect(1.6) }
-                Text(m.failed.isEmpty ? m.status : m.failed).multilineTextAlignment(.center).foregroundColor(.white).padding(.horizontal, 30)
+                Text(m.failed.isEmpty ? m.status : m.failed).font(.footnote).multilineTextAlignment(.center).foregroundColor(soft).padding(.horizontal, 30)
                 if !m.failed.isEmpty {
                     Button("Terug") { pm.wrappedValue.dismiss() }.font(.headline).padding(.horizontal, 22).padding(.vertical, 10).background(Color.white).foregroundColor(.black).cornerRadius(5)
                 }
@@ -471,9 +554,22 @@ struct Scrubber: View {
 struct AudioSubsPanel: View {
     @ObservedObject var m: PlayerModel
     var body: some View {
-        HStack(alignment: .top, spacing: 60) {
-            column("Audio", m.audio, m.audioSel) { m.setAudio($0) }
-            column("Ondertitels", [(Int32(-1), "Uit")] + m.subs, m.subSel) { m.setSub($0) }
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .top, spacing: 60) {
+                column("Audio", m.audio, m.audioSel) { m.setAudio($0) }
+                column("Ondertitels", [(Int32(-1), "Uit")] + m.subs, m.subSel) { m.setSub($0) }
+            }
+            HStack(spacing: 10) {
+                Text("Lettergrootte").font(.headline).foregroundColor(.white).padding(.trailing, 6)
+                ForEach(0..<3, id: \.self) { i in
+                    Button { m.setSubSize(i) } label: {
+                        Text(SubPrefs.sizeNames[i]).font(.system(size: 15, weight: .semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                            .background(Capsule().fill(SubPrefs.size == i ? Color.white : Color.white.opacity(0.15)))
+                            .foregroundColor(SubPrefs.size == i ? .black : .white)
+                    }.buttonStyle(.plain)
+                }
+            }
         }.padding(.horizontal, 40).padding(.top, 50)
     }
 
