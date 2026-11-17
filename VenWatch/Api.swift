@@ -37,7 +37,7 @@ enum Api {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("1", forHTTPHeaderField: "X-VenWatch")
-        req.setValue("VenWatchiOS/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("VenWatchiOS/2.0", forHTTPHeaderField: "User-Agent")
         if method != "GET" && method != "DELETE" {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body ?? [:])
@@ -64,6 +64,19 @@ enum Api {
         guard let u = u, !u.isEmpty else { return nil }
         return URL(string: u.hasPrefix("/") ? base + u : u)
     }
+
+    /// Uitgelichte titels voor het "Wie kijkt er?"-scherm (de server geeft pas iets als er een profiel gekozen is)
+    static func saveFeatured(_ items: [Item]) {
+        let list = items.filter { $0.backdrop != nil }.prefix(8).map { ["t": $0.type, "i": $0.id, "n": $0.title, "y": $0.year, "b": $0.backdrop ?? ""] as [String: Any] }
+        if !list.isEmpty { UserDefaults.standard.set(Array(list), forKey: "featured") }
+    }
+    static func featured() -> [Item] {
+        let raw = UserDefaults.standard.array(forKey: "featured") as? [[String: Any]] ?? []
+        return raw.compactMap { j in
+            guard let id = j["i"] as? Int, let t = j["t"] as? String else { return nil }
+            return Item(type: t, id: id, title: j["n"] as? String ?? "", year: j["y"] as? String ?? "", poster: nil, backdrop: j["b"] as? String)
+        }
+    }
 }
 
 extension Dictionary where Key == String, Value == Any {
@@ -75,14 +88,41 @@ extension Dictionary where Key == String, Value == Any {
     func o(_ k: String) -> JSON? { self[k] as? JSON }
 }
 
-struct Item: Identifiable, Hashable {
+struct Item: Hashable {
     let type: String, id: Int, title: String, year: String, poster: String?, backdrop: String?
+    var pct: Int? = nil
+    var reason: String = ""
+    var season: Int? = nil
+    var episode: Int? = nil
+    var serviceURL: String? = nil
+    var match: Int? = nil
+    var age: String = ""
+    var mine: String = ""        // watchlist / watched / leeg
     var uid: String { "\(type)-\(id)" }
+
     static func from(_ j: JSON) -> Item? {
         let t = j.s("media_type"); let id = j.i("id")
         guard id != 0, t == "movie" || t == "tv" else { return nil }
         let p = j.s("poster"), b = j.s("backdrop")
-        return Item(type: t, id: id, title: j.s("title"), year: j.s("year"), poster: p.isEmpty ? nil : p, backdrop: b.isEmpty ? nil : b)
+        var it = Item(type: t, id: id, title: j.s("title"), year: j.s("year"), poster: p.isEmpty ? nil : p, backdrop: b.isEmpty ? nil : b)
+        if j["pct"] is NSNumber { it.pct = j.i("pct") }
+        if j["match"] is NSNumber { it.match = j.i("match") }
+        it.reason = j.s("reason")
+        it.age = j.s("age_label")
+        it.mine = j.s("my_status")
+        if let pl = j.o("play") {
+            let s = pl.i("s"), e = pl.i("e")
+            if s > 0 { it.season = s }
+            if e > 0 { it.episode = e }
+        }
+        if let sv = j.o("service") {
+            let u = sv.s("url")
+            if !u.isEmpty { it.serviceURL = u }
+        }
+        return it
     }
-    static func list(_ a: [JSON]) -> [Item] { a.compactMap(from) }
+    static func list(_ a: [JSON]) -> [Item] {
+        var seen = Set<String>()
+        return a.compactMap(from).filter { seen.insert($0.uid).inserted }
+    }
 }
