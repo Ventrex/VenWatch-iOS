@@ -59,6 +59,8 @@ struct LoginView: View {
     @State private var server = Api.base
     @State private var err = ""
     @State private var busy = false
+    @State private var showDl = false
+    @ObservedObject var dl = Downloads.shared
     var body: some View {
         VStack(spacing: 14) {
             Text("VENWATCH").font(.system(size: 38, weight: .black)).foregroundColor(red).padding(.bottom, 10)
@@ -80,7 +82,20 @@ struct LoginView: View {
                     .background(red).foregroundColor(.white).cornerRadius(5)
             }
             .disabled(busy)
+            if offline && dl.items.contains(where: { $0.state == "done" }) {
+                Button { showDl = true } label: {
+                    Label("Gedownloade titels kijken", systemImage: "arrow.down.circle").bold().frame(maxWidth: .infinity).padding(14)
+                        .background(Color(white: 0.2)).foregroundColor(.white).cornerRadius(5)
+                }
+            }
         }.padding(28).frame(maxWidth: 440)
+        .fullScreenCover(isPresented: $showDl) {
+            NavigationView {
+                ScrollView { DownloadsList().padding(.vertical, 16) }
+                    .background(Color.black.ignoresSafeArea())
+                    .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button("Klaar") { showDl = false } } }
+            }.navigationViewStyle(.stack).preferredColorScheme(.dark)
+        }
     }
     func field(_ t: TextField<Text>) -> some View {
         t.textInputAutocapitalization(.never).disableAutocorrection(true).padding(14).background(Color(white: 0.2)).cornerRadius(5)
@@ -289,6 +304,7 @@ struct TopBar: View {
             Text(me.o("user")?.s("display_name") ?? "")
             Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
             ThemeMenu()
+            Text("Versie \(appVersion)")
             Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
         } label: {
             HStack(spacing: 4) {
@@ -600,6 +616,7 @@ struct MyView: View {
                     }.buttonStyle(.plain)
                 }.frame(maxWidth: .infinity).padding(.top, 10)
 
+                DownloadsList()
                 if !watchlist.isEmpty { listRow("Mijn lijst", watchlist) }
                 if !liked.isEmpty { listRow("Vind ik leuk", liked) }
                 if !watched.isEmpty { listRow("Bekeken", watched) }
@@ -614,7 +631,7 @@ struct MyView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     RowTitle(text: "Ondertitels")
                     Picker("Taal", selection: $subLang) {
-                        Text("Originele taal").tag("orig"); Text("Nederlands").tag("nl"); Text("Uit").tag("off")
+                        Text("Automatisch").tag("orig"); Text("Altijd NL").tag("nl"); Text("Uit").tag("off")
                     }.pickerStyle(.segmented).frame(maxWidth: 420).padding(.horizontal, edge(hs))
                     .onChange(of: subLang) { SubPrefs.lang = $0 }
                     Picker("Grootte", selection: $subSize) {
@@ -625,6 +642,7 @@ struct MyView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
                     Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
+                    Text("VenWatch \(appVersion)").font(.caption).foregroundColor(soft)
                 }.padding(.horizontal, edge(hs)).foregroundColor(.white)
             }.padding(.bottom, 40)
         }

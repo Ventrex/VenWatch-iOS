@@ -377,6 +377,7 @@ struct SideRail: View {
                 Text(me.o("user")?.s("display_name") ?? "")
                 Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
                 ThemeMenu()
+                Text("Versie \(appVersion)")
                 Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
             } label: { AvatarView(p: me.o("user") ?? [:], size: 36) }
             .padding(.bottom, 22)
@@ -541,4 +542,57 @@ func dedupeNames(_ list: [(Int32, String)]) -> [(Int32, String)] {
         count[item.1] = n
         return (item.0, n > 1 ? "\(item.1) (\(n))" : item.1)
     }
+}
+
+// MARK: - Trailer op volledig scherm, in de app (niet de YouTube-app)
+
+struct FullTrailer: View {
+    let key: String
+    let title: String
+    @Environment(\.dismiss) var dismiss
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            TrailerPlayerWeb(key: key).ignoresSafeArea()
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.system(size: 18, weight: .bold)).foregroundColor(.white)
+                    .frame(width: 44, height: 44).background(Color.black.opacity(0.6)).clipShape(Circle())
+            }.padding(18)
+        }
+        .statusBarHidden()
+    }
+}
+
+/// YouTube-speler met bediening; geladen vanaf je eigen VenWatch-adres zodat YouTube hem toestaat
+struct TrailerPlayerWeb: UIViewRepresentable {
+    let key: String
+    func makeUIView(context: Context) -> WKWebView {
+        let c = WKWebViewConfiguration()
+        c.allowsInlineMediaPlayback = true
+        c.mediaTypesRequiringUserActionForPlayback = []
+        let w = WKWebView(frame: .zero, configuration: c)
+        w.isOpaque = false
+        w.backgroundColor = .black
+        w.scrollView.isScrollEnabled = false
+        let origin = Api.base.isEmpty ? "https://venwatch.app" : Api.base
+        let html = """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>html,body{margin:0;background:#000;height:100%;overflow:hidden}
+        iframe{position:absolute;inset:0;width:100%;height:100%;border:0}</style></head><body>
+        <iframe src="https://www.youtube-nocookie.com/embed/\(key)?autoplay=1&playsinline=1&controls=1&rel=0&modestbranding=1&iv_load_policy=3&origin=\(origin)"
+          allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        </body></html>
+        """
+        w.loadHTMLString(html, baseURL: URL(string: origin))
+        return w
+    }
+    func updateUIView(_ w: WKWebView, context: Context) {}
+    static func dismantleUIView(_ w: WKWebView, coordinator: ()) { w.loadHTMLString("", baseURL: nil) }
+}
+
+/// App-versie (zie je in je profiel, zodat je kunt checken of de update binnen is)
+var appVersion: String {
+    let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    let b = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+    return b.isEmpty || b == v ? v : "\(v) (\(b))"
 }

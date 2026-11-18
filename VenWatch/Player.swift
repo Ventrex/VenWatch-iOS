@@ -8,23 +8,25 @@ struct PlayReq: Identifiable {
     var season: Int? = nil
     var episode: Int? = nil
     var logo: String? = nil
+    var localFile: URL? = nil                       // gedownload: offline afspelen
+    var localSubs: [(URL, String, String)] = []     // bijbehorende ondertitels (adres, naam, taal)
 }
 
 /// Instellingen voor ondertitels
 enum SubPrefs {
-    /// "orig" = taal van de film/serie (standaard), "nl" = Nederlands, "off" = uit
+    /// "orig" = automatisch (Nederlands als er niet Nederlands gesproken wordt, standaard), "nl" = altijd Nederlands, "off" = uit
     static var lang: String {
         get { UserDefaults.standard.string(forKey: "subpref") ?? "orig" }
         set { UserDefaults.standard.set(newValue, forKey: "subpref") }
     }
     /// 0 klein · 1 normaal · 2 groot
     static var size: Int {
-        get { UserDefaults.standard.object(forKey: "subsize") as? Int ?? 0 }
-        set { UserDefaults.standard.set(newValue, forKey: "subsize") }
+        get { UserDefaults.standard.object(forKey: "subsize2") as? Int ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "subsize2") }
     }
     static let sizeNames = ["Klein", "Normaal", "Groot"]
-    /// VLC: hoe hoger het getal, hoe kleiner de letters
-    static var vlcSize: Int { [26, 21, 17][min(2, max(0, size))] }
+    /// VLC: hoe hoger het getal, hoe kleiner de letters (16 = VLC-standaard)
+    static var vlcSize: Int { [15, 11, 8][min(2, max(0, size))] }
 }
 
 /// Taalcode → woorden waarmee VLC een ingebakken spoor kan noemen
@@ -117,7 +119,37 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     func begin(_ r: PlayReq) async {
         type = r.type; tmdb = r.tmdb; title = r.title
         await MainActor.run { self.season = r.season; self.episode = r.episode; self.logo = r.logo }
+        if let f = r.localFile {
+            // Gedownload: meteen het bestand, met de opgeslagen ondertitels; positie van de server als die er is
+            let path = "/api/watchpos/\(type)/\(tmdb)"
+            let p: JSON? = await withTaskGroup(of: JSON?.self) { g in      // offline: niet blijven wachten
+                g.addTask { (try? await Api.obj(path))?.o("pos") }
+                g.addTask { try? await Task.sleep(nanoseconds: 3_000_000_000); return nil }
+                let first = await g.next() ?? nil
+                g.cancelAll()
+                return first
+            }
+            await MainActor.run {
+                self.local = true
+                if let p = p, p.d("pos") > 30, p.d("dur") == 0 || p.d("pos") < p.d("dur") * 0.95,
+                   self.type == "movie" || (p.i("season") == self.season && p.i("episode") == self.episode) { self.startMs = Int(p.d("pos") * 1000) }
+                self.subtitleURLs = r.localSubs
+                self.sources = [Source(url: f, label: "Gedownload", size: "", quality: "", info: "", key: "local", subs: [])]
+                self.idx = 0
+                self.start()
+            }
+            if origLang.isEmpty { await loadOrigLang() }
+            return
+        }
         await load()
+    }
+    var local = false
+
+    /// De echte originele taal van de titel (waar hij gemaakt is, volgens TMDB), niet wat er toevallig in het bestand staat
+    func loadOrigLang() async {
+        guard let d = try? await Api.obj("/api/title/\(type)/\(tmdb)") else { return }
+        let l = d.s("original_language").isEmpty ? d.s("language") : d.s("original_language")
+        await MainActor.run { if self.origLang.isEmpty && !l.isEmpty { self.origLang = l; self.autoPicked = false; if self.tracksReady { self.autoPick() } } }
     }
 
     private var loadToken = UUID()
@@ -185,6 +217,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             if !self.sources.isEmpty { self.start() } else { self.status = "Zoeken bij je bronnen…" }
         }
 
+        if await MainActor.run(body: { self.origLang.isEmpty }) { Task { await self.loadOrigLang() } }
         // Daarna de gewone zoektocht en (via VenRelay) alles
         let full = await fetch("full")
         guard await current() else { return }
@@ -233,6 +266,7 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
 
     /// Volgende bron als deze niet wil
     func next() {
+        if local { failed = "Het gedownloade bestand kan niet worden afgespeeld."; return }
         idx += 1; player.stop()
         if idx < sources.count { start(); return }
         player.media = nil; idx = sources.count
@@ -306,7 +340,20 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         for (k, id) in extraIds.enumerated() where k < slaveLabels.count {
             if let i = list.firstIndex(where: { $0.0 == id }) { list[i].1 = slaveLabels[k] }
         }
-        subs = list
+        // Alleen Nederlandse en Engelse ondertitels
+        let nlen = langWords("nl") + langWords("en") + ["nederlands", "engels"]
+        subs = list.filter { t in nlen.contains { t.1.lowercased().contains($0) } }
+        // Audio: Nederlands, dan de echte originele taal, dan Engels (alleen die drie, als ze er zijn)
+        let rank: ((Int32, String)) -> Int = { t in
+            let n = t.1.lowercased()
+            if langWords("nl").contains(where: { n.contains($0) }) { return 0 }
+            if !self.origLang.isEmpty, langWords(self.origLang).contains(where: { n.contains($0) }) { return 1 }
+            if langWords("en").contains(where: { n.contains($0) }) { return 2 }
+            return 3
+        }
+        let ranked = audio.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map { $0.element }
+        let known = ranked.filter { rank($0) < 3 }
+        audio = known.isEmpty ? ranked : known
         audioSel = player.currentAudioTrackIndex
         subSel = player.currentVideoSubTitleIndex
     }
@@ -320,31 +367,40 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         switch SubPrefs.lang {
         case "off": return nil
         case "nl": return "nl"
-        default: return origLang.isEmpty ? "en" : origLang
+        default: return dutchAudioOn ? nil : "nl"     // automatisch: Nederlands gesproken = geen ondertitels
         }
     }
 
     /// Audio: Nederlands gesproken > oorspronkelijke taal > Engels. Ondertitels: wat je hebt ingesteld (standaard de originele taal).
     func autoPick() {
-        guard !autoPicked else { return }
+        guard !autoPicked, !userAudio else { return }
         autoPicked = true
         let dutchAudio = find(audio, langWords("nl"))
+        dutchAudioOn = dutchAudio != nil
         if let t = dutchAudio ?? find(audio, langWords(origLang)) ?? find(audio, langWords("en")) { setAudio(t) }
-        if let want = wantedSubLang, let t = find(subs, langWords(want)) { setSub(t); subsChosen = true }
+        // Ondertitels: Nederlands (anders Engels) als de film niet in het Nederlands gesproken wordt
+        if let want = wantedSubLang, let t = find(subs, langWords(want)) ?? (want == "nl" ? find(subs, langWords("en")) : nil) { setSub(t); subsChosen = true }
         else { setSub(-1) }
     }
     private var subsChosen = false
+    private var dutchAudioOn = false
 
     /// Losse ondertitels (van de bron en OpenSubtitles): de gewenste taal eerst en meteen aan, de rest alleen in het menu
     func addExternalSubs() {
         let extra = idx < sources.count ? sources[idx].subs : []
-        let all = (extra + subtitleURLs).filter { !addedSubs.contains($0.0) }
+        let okLang: ((URL, String, String)) -> Bool = { x in
+            let l = x.2.lowercased(), n = x.1.lowercased()
+            return ["nl", "nld", "dut", "en", "eng"].contains(l) || n.contains("nederlands") || n.contains("dutch") || n.contains("engels") || n.contains("english")
+        }
+        let all = (extra + subtitleURLs).filter { !addedSubs.contains($0.0) && okLang($0) }
         func add(_ x: (URL, String, String), _ on: Bool) {
             addedSubs.insert(x.0)
-            slaveLabels.append(x.1.isEmpty ? (x.2.isEmpty ? "Ondertitel" : x.2.uppercased()) : x.1)
+            let l = x.2.lowercased()
+            let base = ["nl", "nld", "dut"].contains(l) ? "Nederlands" : ["en", "eng"].contains(l) ? "Engels" : ""
+            slaveLabels.append(base.isEmpty ? (x.1.isEmpty ? "Ondertitel" : x.1) : (x.1.isEmpty || x.1.lowercased().contains(base.lowercased()) ? base : "\(base) · \(x.1)"))
             player.addPlaybackSlave(x.0, type: .subtitle, enforce: on)
         }
-        if !subsChosen, !userPicked, let want = wantedSubLang, let hit = all.first(where: { $0.2.lowercased() == want.lowercased() }) {
+        if !subsChosen, !userPicked, let want = wantedSubLang, let hit = all.first(where: { (want == "nl" ? ["nl", "nld", "dut"] : [want]).contains($0.2.lowercased()) }) {
             add(hit, true)
             subsChosen = true
         }
@@ -371,6 +427,29 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     }
 
     func setAudio(_ i: Int32) { player.currentAudioTrackIndex = i; audioSel = i }
+    /// Zelf gekozen in het menu
+    func pickAudio(_ i: Int32) { userAudio = true; setAudio(i) }
+    private var userAudio = false
+
+    // MARK: App verlaten en terugkomen: iOS verbreekt de verbinding, dus daarna op dezelfde plek opnieuw starten
+    private var bgMs = 0
+    private var bgPlaying = false
+    func toBackground() {
+        guard started || player.media != nil else { return }
+        bgMs = Int(player.time.intValue)
+        bgPlaying = player.isPlaying || player.state == .buffering
+        save()
+        player.pause()
+    }
+    func fromBackground() {
+        guard bgMs > 0, idx < sources.count else { return }
+        startMs = bgMs
+        let resume = bgPlaying
+        bgMs = 0
+        player.stop()
+        start()
+        if !resume { DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.player.pause() } }
+    }
     func setSub(_ i: Int32) { player.currentVideoSubTitleIndex = i; subSel = i }
     /// Zelf gekozen in het menu: later binnenkomende ondertitels veranderen dat niet meer
     func pickSub(_ i: Int32) { userPicked = true; setSub(i) }
@@ -440,6 +519,8 @@ struct PlayerScreen: View {
         .animation(.easeInOut(duration: 0.2), value: controls)
         .animation(.easeInOut(duration: 0.2), value: panel)
         .task { m.dismissHook = { pm.wrappedValue.dismiss() }; await m.begin(req) }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in m.toBackground() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in m.fromBackground() }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { m.stop(); UIApplication.shared.isIdleTimerDisabled = false }
         .onReceive(tick) { _ in
@@ -515,8 +596,9 @@ struct PlayerScreen: View {
                 if m.started {
                     VStack(spacing: 14) {
                         HStack(spacing: 14) {
+                            Text(clock(m.curSec)).font(.system(size: big ? 15 : 13, weight: .medium).monospacedDigit()).foregroundColor(.white)
                             Scrubber(pos: m.pos, lenSec: m.lenSec, onDrag: { d in dragging = d; poke() }, onSeek: { m.seek($0) })
-                            Text(clock(m.leftSec)).font(.system(size: 14, weight: .medium).monospacedDigit()).foregroundColor(.white)
+                            Text("-" + clock(m.leftSec)).font(.system(size: big ? 15 : 13, weight: .medium).monospacedDigit()).foregroundColor(.white)
                         }
                         HStack(spacing: big ? 34 : 20) {
                             bottomTitle(big: big)
@@ -524,8 +606,8 @@ struct PlayerScreen: View {
                             if let nx = m.nextEp { IconCtl(icon: "forward.end", label: "Volgende aflevering", big: big) { m.playEpisode(nx.0, nx.1) } }
                             if m.type == "tv" { IconCtl(icon: "rectangle.stack", label: "Afleveringen", big: big) { panel = .episodes } }
                             IconCtl(icon: "text.bubble", label: "Audio en ondertitels", big: big) { m.refreshTracks(); panel = .audio }
-                            IconCtl(icon: "speedometer", label: "Snelheid (\(rateText(m.rate)))", big: big) { panel = .speed }
-                            IconCtl(icon: "arrow.triangle.2.circlepath", label: "Andere bron", big: big) { panel = .sources }
+                            IconCtl(icon: "speedometer", label: "Snelheid", big: big) { panel = .speed }
+                            if !m.local { IconCtl(icon: "arrow.triangle.2.circlepath", label: "Andere bron (\(m.sources.count))", big: big) { panel = .sources } }
                             IconCtl(icon: "lock.open", label: "Vergrendelen", big: big) { locked = true; showUnlock = true; poke() }
                         }
                     }
@@ -615,8 +697,12 @@ struct IconCtl: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon).font(.system(size: big ? 28 : 21, weight: .regular)).foregroundColor(.white)
-                .frame(width: big ? 44 : 32, height: big ? 44 : 32).contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: big ? 24 : 21, weight: .regular))
+                    .frame(width: big ? 30 : 32, height: big ? 40 : 32)
+                if big { Text(label).font(.system(size: 15, weight: .semibold)).lineLimit(1) }
+            }
+            .foregroundColor(.white).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -681,7 +767,7 @@ struct AudioSubsPanel: View {
         let big = hs == .regular
         VStack(alignment: .leading, spacing: big ? 22 : 14) {
             HStack(alignment: .top, spacing: big ? 80 : 26) {
-                column("Audio", audioItems, m.audioSel, big: big) { m.setAudio($0) }
+                column("Audio", audioItems, m.audioSel, big: big) { m.pickAudio($0) }
                 column("Ondertitels", subItems, m.subSel, big: big) { m.pickSub($0) }
             }
             HStack(spacing: 8) {

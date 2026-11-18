@@ -17,6 +17,7 @@ struct DetailView: View {
     @State private var tabName = ""
     @State private var play: PlayReq?
     @State private var resume: JSON?      // waar je bent gebleven (film of aflevering)
+    @State private var trailerKey: String?
 
     var title: String { d.s("title") }
     var castList: [JSON] { d.a("cast") }
@@ -144,13 +145,19 @@ struct DetailView: View {
                 Button { rate(8) } label: { Label("Vind ik leuk", systemImage: rating >= 7 && rating < 9 ? "hand.thumbsup.fill" : "hand.thumbsup") }
                 Button { rate(10) } label: { Label("Vind ik geweldig", systemImage: rating >= 9 ? "heart.fill" : "heart") }
             } label: { ActionLabel(icon: thumbIcon, label: "Beoordeel") }
-            if let key = d.o("trailer")?.s("key"), !key.isEmpty, let u = URL(string: "https://www.youtube.com/watch?v=\(key)") {
-                ActionButton(icon: "play.rectangle", label: "Trailer") { openURL(u) }
+            if let key = d.o("trailer")?.s("key"), !key.isEmpty {
+                ActionButton(icon: "play.rectangle", label: "Trailer") { trailerKey = key }
+            }
+            if type == "movie", loaded {
+                DownloadButton(type: "movie", tmdb: id, title: title, poster: d.s("poster"), backdrop: d.s("backdrop"))
             }
             if type == "tv" {
                 ActionButton(icon: "list.bullet", label: "Afleveringen") { tabName = "Afleveringen" }
             }
         }.padding(.vertical, 4)
+        .fullScreenCover(isPresented: Binding(get: { trailerKey != nil }, set: { if !$0 { trailerKey = nil } })) {
+            FullTrailer(key: trailerKey ?? "", title: title)
+        }
     }
 
     @ViewBuilder var tabContent: some View {
@@ -182,7 +189,9 @@ struct DetailView: View {
                 Text(curName).font(.headline)
             }
             ForEach(Array(episodes.sorted { $0.i("n") < $1.i("n") }.enumerated()), id: \.offset) { _, e in
-                EpisodeRow(e: e, resumePct: resumePct(e.i("n"))) {
+                EpisodeRow(e: e, resumePct: resumePct(e.i("n")), download: (e["aired"] as? Bool ?? true) ? AnyView(
+                    DownloadButton(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), epName: e.s("name"), poster: d.s("poster"), backdrop: e.s("still").isEmpty ? d.s("backdrop") : e.s("still"), compact: true)
+                ) : nil) {
                     if e["aired"] as? Bool ?? true { play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), logo: logoPath) }
                 }
             }
@@ -343,6 +352,7 @@ struct TabStrip: View {
 struct EpisodeRow: View {
     let e: JSON
     let resumePct: Int?
+    var download: AnyView? = nil
     let onPlay: () -> Void
     @Environment(\.horizontalSizeClass) var hs
     var body: some View {
@@ -363,6 +373,7 @@ struct EpisodeRow: View {
                     if !aired, !e.s("air_date").isEmpty { Text("Verschijnt \(e.s("air_date"))").font(.caption).foregroundColor(.orange) }
                 }
                 Spacer(minLength: 0)
+                if let dl = download { dl }
             }
             if !e.s("overview").isEmpty {
                 Text(e.s("overview")).font(.footnote).foregroundColor(soft).lineLimit(hs == .regular ? 3 : 4)
