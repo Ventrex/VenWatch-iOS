@@ -222,23 +222,45 @@ struct MainView: View {
     let me: JSON
     var onSwitch: () -> Void
     var onLogout: () -> Void
+    @Environment(\.horizontalSizeClass) var hs
     @State private var section = 0          // 0 home · 1 series · 2 films · 3 mijn · 4 zoeken
     @State private var visited: Set<Int> = [0]
+    @State private var surprise: Item?
+
+    var pages: some View {
+        ZStack {
+            ForEach([0, 1, 2, 3, 4], id: \.self) { s in
+                if visited.contains(s) {
+                    page(s).opacity(section == s ? 1 : 0).allowsHitTesting(section == s)
+                }
+            }
+        }
+    }
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 0) {
-                TopBar(section: $section, me: me, onSwitch: onSwitch, onLogout: onLogout)
-                ZStack {
-                    ForEach([0, 1, 2, 3, 4], id: \.self) { s in
-                        if visited.contains(s) {
-                            page(s).opacity(section == s ? 1 : 0).allowsHitTesting(section == s)
-                        }
+            Group {
+                if hs == .regular {
+                    // iPad: zijbalk met iconen, zoals op de tv
+                    HStack(spacing: 0) {
+                        SideRail(section: $section, me: me, onSwitch: onSwitch, onLogout: onLogout,
+                                 onShuffle: { surprise = Api.featured().randomElement() })
+                        pages
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        TopBar(section: $section, me: me, onSwitch: onSwitch, onLogout: onLogout)
+                        pages
                     }
                 }
             }
             .background(Color.black.ignoresSafeArea())
             .navigationBarHidden(true)
+            .background(
+                NavigationLink(isActive: Binding(get: { surprise != nil }, set: { if !$0 { surprise = nil } })) {
+                    if let s = surprise { DetailView(type: s.type, id: s.id) }
+                } label: { EmptyView() }.hidden()
+            )
         }
         .navigationViewStyle(.stack)
         .onChange(of: section) { v in _ = visited.insert(v) }
@@ -333,25 +355,28 @@ struct HomeView: View {
     var active = true
     @State private var shelves: [ShelfData] = []
     @State private var hero: Item?
+    @State private var heroItems: [Item] = []
+    @State private var badges: [String: String] = [:]
     @State private var loaded = false
     @State private var lastLoad = Date.distantPast
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
-                if let h = hero { Billboard(item: h) }
+                if !heroItems.isEmpty { HeroCarousel(items: heroItems, badges: badges, active: active) }
+                else if let h = hero { Billboard(item: h) }
                 ForEach(Array(shelves.enumerated()), id: \.offset) { _, s in
                     switch s.style {
                     case 1: Top10Row(title: s.title, items: s.items)
-                    case 2: FeaturedRow(title: s.title, items: s.items, continueRow: true)
-                    case 3: FeaturedRow(title: s.title, items: s.items)
+                    case 2: FeaturedRow(title: s.title, items: s.items, continueRow: true, active: active)
+                    case 3: FeaturedRow(title: s.title, items: s.items, active: active)
                     default: PosterRow(title: s.title, items: s.items)
                     }
                 }
                 if !loaded { HStack { Spacer(); ProgressView().tint(red); Spacer() }.padding(.top, 80) }
                 else if shelves.isEmpty { Text("Niets te tonen.").foregroundColor(.gray).padding() }
             }
-            .padding(.top, kind == nil ? 8 : 0).padding(.bottom, 40)
+            .padding(.bottom, 40)
         }
         .refreshable { await reload() }
         .task { if !loaded { await reload() } }
@@ -418,6 +443,18 @@ struct HomeView: View {
         rows.append(ShelfData(title: "Wat je gezin kijkt", items: Item.list(h.a("activity"))))
         var seen = Set<String>()
         shelves = rows.filter { !$0.items.isEmpty && seen.insert($0.title).inserted }
+        // Bovenaan: een handvol afwisselende tips (uit verschillende rijen, films en series door elkaar)
+        let top1 = Item.list((await t1)?.a("items") ?? []), top2 = Item.list((await t2)?.a("items") ?? [])
+        var bd: [String: String] = [:]
+        for (k, it) in top1.prefix(10).enumerated() { bd[it.uid] = "#\(k + 1) in films vandaag" }
+        for (k, it) in top2.prefix(10).enumerated() { bd[it.uid] = "#\(k + 1) in series vandaag" }
+        badges = bd
+        var pools: [[Item]] = [rec]
+        pools += because.map { $0.items }
+        pools += [top1, top2]
+        pools += h.a("themes").map { Item.list($0.a("items")) }
+        pools += h.a("because").map { Item.list($0.a("items")) }
+        heroItems = variedPicks(pools, n: 7, skip: Set(c.map { $0.uid }))
         var feat = rec
         if let b = h.o("billboard"), let bi = Item.from(b) { feat.insert(bi, at: 0) }
         Api.saveFeatured(feat)
@@ -436,7 +473,13 @@ struct HomeView: View {
         let topItems = Item.list((await top)?.a("items") ?? [])
         if let b = h.o("billboard"), let bi = Item.from(b), bi.type == k { hero = bi }
         else { hero = (mine + topItems).first(where: { $0.backdrop != nil }) }
-        let picks = (mine + extra).filter { $0.uid != hero?.uid }
+        var bd: [String: String] = [:]
+        for (n, it) in topItems.prefix(10).enumerated() { bd[it.uid] = "#\(n + 1) in \(k == "tv" ? "series" : "films") vandaag" }
+        badges = bd
+        heroItems = variedPicks([mine, extra, topItems] + s.a("shelves").map { Item.list($0.a("items")).filter { $0.type == k } }, n: 6,
+                                skip: Set(c.map { $0.uid }))
+        let heroIds = Set(heroItems.prefix(2).map { $0.uid })
+        let picks = (mine + extra).filter { $0.uid != hero?.uid && !heroIds.contains($0.uid) }
         var rows: [ShelfData] = []
         if !c.isEmpty { rows.append(ShelfData(title: "Verder kijken", items: c, style: 2)) }
         rows.append(ShelfData(title: "Top-keuzes voor jou", items: Array(picks.prefix(20))))

@@ -499,9 +499,6 @@ struct PlayerScreen: View {
                 HStack(spacing: 12) {
                     Button { m.stop(); pm.wrappedValue.dismiss() } label: { Image(systemName: "arrow.left").font(.system(size: 24, weight: .semibold)).padding(10) }
                     Spacer()
-                    Text(m.heading).font(.system(size: big ? 17 : 15, weight: .semibold)).lineLimit(1)
-                    Spacer()
-                    Color.clear.frame(width: 44, height: 44)
                 }
                 .foregroundColor(.white).padding(.horizontal, 12)
                 Spacer()
@@ -521,15 +518,15 @@ struct PlayerScreen: View {
                             Scrubber(pos: m.pos, lenSec: m.lenSec, onDrag: { d in dragging = d; poke() }, onSeek: { m.seek($0) })
                             Text(clock(m.leftSec)).font(.system(size: 14, weight: .medium).monospacedDigit()).foregroundColor(.white)
                         }
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: big ? 40 : 22) {
-                                CtlButton(icon: "speedometer", label: "Snelheid (\(rateText(m.rate)))") { panel = .speed }
-                                CtlButton(icon: "lock.open", label: "Vergrendelen") { locked = true; showUnlock = true; poke() }
-                                if m.type == "tv" { CtlButton(icon: "rectangle.stack", label: "Afleveringen") { panel = .episodes } }
-                                CtlButton(icon: "text.bubble", label: "Audio en ondertitels") { m.refreshTracks(); panel = .audio }
-                                CtlButton(icon: "arrow.triangle.2.circlepath", label: "Andere bron") { panel = .sources }
-                                if let nx = m.nextEp { CtlButton(icon: "forward.end", label: "Volgende afl.") { m.playEpisode(nx.0, nx.1) } }
-                            }
+                        HStack(spacing: big ? 34 : 20) {
+                            bottomTitle(big: big)
+                            Spacer(minLength: 8)
+                            if let nx = m.nextEp { IconCtl(icon: "forward.end", label: "Volgende aflevering", big: big) { m.playEpisode(nx.0, nx.1) } }
+                            if m.type == "tv" { IconCtl(icon: "rectangle.stack", label: "Afleveringen", big: big) { panel = .episodes } }
+                            IconCtl(icon: "text.bubble", label: "Audio en ondertitels", big: big) { m.refreshTracks(); panel = .audio }
+                            IconCtl(icon: "speedometer", label: "Snelheid (\(rateText(m.rate)))", big: big) { panel = .speed }
+                            IconCtl(icon: "arrow.triangle.2.circlepath", label: "Andere bron", big: big) { panel = .sources }
+                            IconCtl(icon: "lock.open", label: "Vergrendelen", big: big) { locked = true; showUnlock = true; poke() }
                         }
                     }
                     .padding(.horizontal, big ? 40 : 18).padding(.bottom, 14)
@@ -566,14 +563,40 @@ struct PlayerScreen: View {
 
     func rateText(_ r: Float) -> String { r == 1 ? "1x" : String(format: "%gx", r) }
 
+    /// Onderin links: de titel, bij een serie met aflevering ("Jujutsu Kaisen A1 Ryomen Sukuna")
+    @ViewBuilder func bottomTitle(big: Bool) -> some View {
+        let f: CGFloat = big ? 19 : 14
+        if m.type == "tv", let s = m.season, let e = m.episode {
+            (Text(m.title).font(.system(size: f, weight: .bold))
+             + Text("  S\(s):A\(e)").font(.system(size: f, weight: .regular))
+             + Text(m.epName.isEmpty ? "" : "  \(m.epName)").font(.system(size: f, weight: .regular)))
+                .foregroundColor(.white).lineLimit(1)
+        } else {
+            Text(m.title).font(.system(size: f, weight: .bold)).foregroundColor(.white).lineLimit(1)
+        }
+    }
+
     // MARK: Panelen
 
     @ViewBuilder func panelView(_ p: PlayerPanel) -> some View {
+        if p == .audio {
+            // Zoals Netflix: een grijs paneel rechtsonder, het beeld blijft zichtbaar
+            ZStack(alignment: .bottomTrailing) {
+                Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { panel = nil; poke() }
+                AudioSubsPanel(m: m, done: { panel = nil; poke() })
+                    .padding(.trailing, hs == .regular ? 28 : 10).padding(.bottom, hs == .regular ? 96 : 70).padding(.leading, 10)
+            }
+        } else {
+            fullPanel(p)
+        }
+    }
+
+    @ViewBuilder func fullPanel(_ p: PlayerPanel) -> some View {
         ZStack(alignment: .topTrailing) {
             Color.black.opacity(0.88).ignoresSafeArea().onTapGesture { panel = nil; poke() }
             Group {
                 switch p {
-                case .audio: AudioSubsPanel(m: m)
+                case .audio: AudioSubsPanel(m: m, done: { panel = nil })
                 case .speed: SpeedPanel(m: m) { panel = nil }
                 case .sources: SourcesPanel(m: m) { panel = nil }
                 case .episodes: EpisodesPanel(m: m) { panel = nil }
@@ -581,6 +604,22 @@ struct PlayerScreen: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Button { panel = nil; poke() } label: { Image(systemName: "xmark").font(.system(size: 24, weight: .semibold)).foregroundColor(.white).padding(20) }
         }
+    }
+}
+
+/// Alleen een icoon (zoals de knoppen rechtsonder bij Netflix)
+struct IconCtl: View {
+    let icon: String
+    let label: String
+    var big = true
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: big ? 28 : 21, weight: .regular)).foregroundColor(.white)
+                .frame(width: big ? 44 : 32, height: big ? 44 : 32).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 
@@ -632,43 +671,56 @@ struct Scrubber: View {
 
 struct AudioSubsPanel: View {
     @ObservedObject var m: PlayerModel
+    var done: () -> Void = {}
+    @Environment(\.horizontalSizeClass) var hs
+
+    var audioItems: [(Int32, String)] { dedupeNames(m.audio.map { ($0.0, prettyTrack($0.1, orig: m.origLang, audio: true)) }) }
+    var subItems: [(Int32, String)] { [(Int32(-1), "Uit")] + dedupeNames(m.subs.map { ($0.0, prettyTrack($0.1, orig: m.origLang, audio: false)) }) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(alignment: .top, spacing: 60) {
-                column("Audio", m.audio, m.audioSel) { m.setAudio($0) }
-                column("Ondertitels", [(Int32(-1), "Uit")] + m.subs, m.subSel) { m.pickSub($0) }
+        let big = hs == .regular
+        VStack(alignment: .leading, spacing: big ? 22 : 14) {
+            HStack(alignment: .top, spacing: big ? 80 : 26) {
+                column("Audio", audioItems, m.audioSel, big: big) { m.setAudio($0) }
+                column("Ondertitels", subItems, m.subSel, big: big) { m.pickSub($0) }
             }
-            HStack(spacing: 10) {
-                Text("Lettergrootte").font(.headline).foregroundColor(.white).padding(.trailing, 6)
+            HStack(spacing: 8) {
+                Text("Lettergrootte").font(.system(size: big ? 15 : 13, weight: .semibold)).foregroundColor(soft).padding(.trailing, 4)
                 ForEach(0..<3, id: \.self) { i in
                     Button { m.setSubSize(i) } label: {
-                        Text(SubPrefs.sizeNames[i]).font(.system(size: 15, weight: .semibold))
-                            .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(Capsule().fill(SubPrefs.size == i ? Color.white : Color.white.opacity(0.15)))
+                        Text(SubPrefs.sizeNames[i]).font(.system(size: big ? 14 : 12, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(SubPrefs.size == i ? Color.white : Color.white.opacity(0.12)))
                             .foregroundColor(SubPrefs.size == i ? .black : .white)
                     }.buttonStyle(.plain)
                 }
             }
-        }.padding(.horizontal, 40).padding(.top, 50)
+        }
+        .padding(.horizontal, big ? 44 : 20).padding(.vertical, big ? 34 : 20)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.15)))
+        .frame(maxWidth: big ? 820 : .infinity, alignment: .trailing)
     }
 
-    func column(_ title: String, _ items: [(Int32, String)], _ sel: Int32, _ pick: @escaping (Int32) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(title).font(.title3.bold()).foregroundColor(.white)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    if items.isEmpty { Text("Niets gevonden").foregroundColor(soft) }
+    func column(_ title: String, _ items: [(Int32, String)], _ sel: Int32, big: Bool, _ pick: @escaping (Int32) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: big ? 18 : 10) {
+            Text(title).font(.system(size: big ? 34 : 22, weight: .bold)).foregroundColor(.white).padding(.leading, big ? 44 : 30)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: big ? 6 : 2) {
+                    if items.isEmpty { Text("Niets gevonden").foregroundColor(soft).padding(.leading, big ? 44 : 30) }
                     ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                         Button { pick(it.0) } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "checkmark").font(.system(size: 15, weight: .bold)).opacity(it.0 == sel ? 1 : 0)
-                                Text(it.1).font(.system(size: 17, weight: it.0 == sel ? .bold : .regular)).lineLimit(2).multilineTextAlignment(.leading)
-                            }.foregroundColor(it.0 == sel ? .white : soft).padding(.vertical, 7)
+                            HStack(spacing: big ? 16 : 10) {
+                                Image(systemName: "checkmark").font(.system(size: big ? 24 : 17, weight: .semibold))
+                                    .frame(width: big ? 28 : 20).opacity(it.0 == sel ? 1 : 0)
+                                Text(it.1).font(.system(size: big ? 25 : 17, weight: .regular)).lineLimit(1).minimumScaleFactor(0.7)
+                            }
+                            .foregroundColor(it.0 == sel ? .white : Color(white: 0.62))
+                            .padding(.vertical, big ? 9 : 6).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
                 }
-            }
-        }.frame(maxWidth: 380, alignment: .leading)
+            }.frame(maxHeight: big ? 300 : 190)
+        }.frame(minWidth: big ? 260 : 130, alignment: .leading)
     }
 }
 

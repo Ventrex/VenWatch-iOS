@@ -195,11 +195,16 @@ struct FeatCard: View {
     let item: Item
     let selected: Bool
     let h: CGFloat
+    var trailer: String? = nil
     var body: some View {
         let w = selected ? h * 16 / 9 : h * 2 / 3
         let url = selected ? Api.img(item.backdrop ?? item.poster, "w780") : Api.img(item.poster ?? item.backdrop, "w342")
         ZStack(alignment: .bottomLeading) {
             Img(url: url).frame(width: w, height: h).clipped()
+            // Even op deze kaart blijven = de trailer speelt in de kaart (zonder geluid)
+            if selected, let k = trailer {
+                TrailerView(key: k, muted: true).frame(width: w, height: h).clipped().transition(.opacity)
+            }
             if selected {
                 LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .center, endPoint: .bottom)
                 Text(item.title.uppercased())
@@ -221,10 +226,13 @@ struct FeaturedRow: View {
     let title: String
     let items: [Item]
     var continueRow = false
+    var active = true
     @Environment(\.horizontalSizeClass) var hs
     @State private var sel = 0
     @State private var open: Item?
     @State private var play: PlayReq?
+    @State private var trailer: String?
+    @State private var visible = true
 
     var body: some View {
         let h: CGFloat = hs == .regular ? 250 : 170
@@ -234,7 +242,7 @@ struct FeaturedRow: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {
                         ForEach(Array(items.enumerated()), id: \.element.uid) { i, it in
-                            FeatCard(item: it, selected: i == sel, h: h)
+                            FeatCard(item: it, selected: i == sel, h: h, trailer: i == sel && active && visible ? trailer : nil)
                                 .id(i)
                                 .onTapGesture {
                                     if i == sel { activate(it, forcePlay: false) }
@@ -257,6 +265,18 @@ struct FeaturedRow: View {
             } label: { EmptyView() }.hidden()
         )
         .fullScreenCover(item: $play) { PlayerScreen(req: $0) }
+        .animation(.easeIn(duration: 0.6), value: trailer)
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .task(id: "\(sel)-\(active)") {
+            trailer = nil
+            guard active, items.indices.contains(sel) else { return }
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled else { return }
+            let it = items[sel]
+            let b = await Briefs.load(it.type, it.id)
+            if !Task.isCancelled { trailer = b.trailer }
+        }
     }
 
     func activate(_ it: Item, forcePlay: Bool) {
@@ -279,17 +299,27 @@ struct FeatInfo: View {
     let continueRow: Bool
     let play: () -> Void
     let info: () -> Void
+    @Environment(\.horizontalSizeClass) var hs
+    @State private var epTitle = ""
+    @State private var text = ""
     var body: some View {
         let parts = item.reason.components(separatedBy: " · ")
         let meta = [item.year, item.age].filter { !$0.isEmpty }.joined(separator: " · ")
         VStack(alignment: .leading, spacing: 4) {
-            if continueRow && parts.count >= 2 {
+            if continueRow && !epTitle.isEmpty {
+                // Verder kijken: welke aflevering, en waar die over gaat
+                Text(epTitle).font(.headline)
+            } else if continueRow && parts.count >= 2 {
                 Text(parts.dropLast().joined(separator: " · ")).font(.subheadline).foregroundColor(soft)
                 Text(parts.last ?? "").font(.headline)
             } else if continueRow && !item.reason.isEmpty {
                 Text(item.reason).font(.headline)
             } else if !meta.isEmpty {
                 Text(meta).font(.subheadline).foregroundColor(soft)
+            }
+            if !text.isEmpty {
+                Text(text).font(hs == .regular ? .callout : .footnote).foregroundColor(Color(white: 0.82))
+                    .lineLimit(3).frame(maxWidth: 640, alignment: .leading).padding(.top, 2)
             }
             HStack(spacing: 10) {
                 Button(action: play) {
@@ -304,6 +334,21 @@ struct FeatInfo: View {
                 }
             }.padding(.top, 6)
         }
+        .task(id: item.uid) { await loadText() }
+    }
+
+    func loadText() async {
+        epTitle = ""; text = ""
+        if continueRow, item.type == "tv", let s = item.season, let e = item.episode {
+            let j = (try? await Api.obj("/api/title/tv/\(item.id)/season/\(s)")) ?? [:]
+            if let ep = j.a("episodes").first(where: { $0.i("n") == e }) {
+                epTitle = "S\(s):A\(e) · \(ep.s("name"))"
+                text = ep.s("overview")
+                return
+            }
+            epTitle = "S\(s):A\(e)"
+        }
+        text = await Briefs.load(item.type, item.id).overview
     }
 }
 

@@ -32,24 +32,39 @@ struct DetailView: View {
     var current: String { tabs.contains(tabName) ? tabName : (tabs.first ?? "") }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                header
+                if hs == .regular {
+                    // iPad: grote kop zoals op de tv (genres, logo, info, rode knop, trailer op de achtergrond)
+                    DetailHero(type: type, id: id, d: d, playLabel: playLabel, onPlay: { startPlay() }, onSecond: {
+                        tabName = type == "tv" ? "Afleveringen" : "Meer zoals dit"
+                        withAnimation { proxy.scrollTo("tabs", anchor: .top) }
+                    })
+                } else {
+                    header
+                }
                 VStack(alignment: .leading, spacing: 14) {
-                    if d.o("logo") == nil || hs != .regular {
-                        Text(title).font(.system(size: hs == .regular ? 34 : 26, weight: .heavy)).foregroundColor(.white)
+                    if hs != .regular {
+                        Text(title).font(.system(size: 26, weight: .heavy)).foregroundColor(.white)
+                        MetaLine(d: d, type: type)
+                        playButton
+                        Text(d.s("overview")).font(.subheadline).foregroundColor(.white)
+                    } else if let r = resume, r.d("dur") > 0 {
+                        HStack(spacing: 8) {
+                            ProgressLine(pct: Int(r.d("pos") / r.d("dur") * 100)).frame(maxWidth: 220)
+                            Text("nog \(Int(max(1, (r.d("dur") - r.d("pos")) / 60))) min").font(.caption).foregroundColor(soft)
+                        }
                     }
-                    MetaLine(d: d, type: type)
-                    playButton
-                    Text(d.s("overview")).font(hs == .regular ? .body : .subheadline).foregroundColor(.white)
                     credits
                     actions
-                    TabStrip(tabs: tabs, current: current) { tabName = $0 }
+                    TabStrip(tabs: tabs, current: current) { tabName = $0 }.id("tabs")
                     tabContent
                 }
                 .padding(.horizontal, edge(hs))
                 .frame(maxWidth: 1000, alignment: .leading)
             }.padding(.bottom, 40)
+        }
         }
         .background(Color.black.ignoresSafeArea())
         .ignoresSafeArea(edges: .top)
@@ -150,7 +165,7 @@ struct DetailView: View {
     }
 
     var episodesView: some View {
-        let seasons = d.a("season_list")
+        let seasons = d.a("season_list").sorted { $0.i("n") < $1.i("n") }   // van laag naar hoog: geen spoilers
         let curName = seasons.first(where: { $0.i("n") == season })?.s("name") ?? "Seizoen \(season)"
         return VStack(alignment: .leading, spacing: 18) {
             if seasons.count > 1 {
@@ -166,7 +181,7 @@ struct DetailView: View {
             } else if seasons.count == 1 {
                 Text(curName).font(.headline)
             }
-            ForEach(Array(episodes.enumerated()), id: \.offset) { _, e in
+            ForEach(Array(episodes.sorted { $0.i("n") < $1.i("n") }.enumerated()), id: \.offset) { _, e in
                 EpisodeRow(e: e, resumePct: resumePct(e.i("n"))) {
                     if e["aired"] as? Bool ?? true { play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), logo: logoPath) }
                 }
@@ -189,7 +204,7 @@ struct DetailView: View {
             let seasons = d.a("season_list").map { $0.i("n") }
             if let r = resume, r.i("season") > 0 { season = r.i("season") }
             else if let n = d.o("progress")?.o("next"), !n.b("done"), n.i("season") > 0 { season = n.i("season") }
-            else { season = seasons.first ?? 1 }
+            else { season = seasons.filter { $0 > 0 }.min() ?? 1 }   // nog niet begonnen: bij seizoen 1
             episodes = ((try? await Api.obj("/api/title/tv/\(id)/season/\(season)"))?.a("episodes")) ?? []
         }
         loaded = true
@@ -216,7 +231,8 @@ struct DetailView: View {
         if let n = d.o("progress")?.o("next"), !n.b("done"), n.i("season") > 0, n.i("episode") > 0 {
             play = PlayReq(type: "tv", tmdb: id, title: title, season: n.i("season"), episode: n.i("episode"), logo: logoPath); return
         }
-        play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: episodes.first?.i("n") ?? 1, logo: logoPath)
+        let first = d.a("season_list").map { $0.i("n") }.filter { $0 > 0 }.min() ?? 1
+        play = PlayReq(type: "tv", tmdb: id, title: title, season: first, episode: 1, logo: logoPath)
     }
 
     func toggleList() {
