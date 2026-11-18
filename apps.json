@@ -19,6 +19,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "1.0.15",
+          "buildVersion": "15",
+          "date": "2026-11-18T04:32:03Z",
+          "localizedDescription": "SideStore/AltStore-bron met automatische updates + app-icoon",
+          "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.15/VenWatch-iOS.ipa",
+          "size": 16217944,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "1.0",
           "buildVersion": "1",
           "date": "2026-11-14T21:03:36Z",
@@ -33,7 +42,12 @@
         "privacy": {
           "NSLocalNetworkUsageDescription": "Om je VenWatch-server thuis te bereiken."
         }
-      }
+      },
+      "version": "1.0.15",
+      "versionDate": "2026-11-18T04:32:03Z",
+      "versionDescription": "SideStore/AltStore-bron met automatische updates + app-icoon",
+      "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.15/VenWatch-iOS.ipa",
+      "size": 16217944
     }
   ],
   "news": []
