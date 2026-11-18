@@ -19,6 +19,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "1.0.18",
+          "buildVersion": "18",
+          "date": "2026-11-18T09:50:55Z",
+          "localizedDescription": "Melding bij een nieuwe versie (net als de TV-app)",
+          "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.18/VenWatch-iOS.ipa",
+          "size": 16405646,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "1.0.17",
           "buildVersion": "17",
           "date": "2026-11-18T07:03:33Z",
@@ -52,11 +61,11 @@
           "NSLocalNetworkUsageDescription": "Om je VenWatch-server thuis te bereiken."
         }
       },
-      "version": "1.0.17",
-      "versionDate": "2026-11-18T07:03:33Z",
-      "versionDescription": "Pagina van balken, thema's, betere tips en trailers",
-      "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.17/VenWatch-iOS.ipa",
-      "size": 16393368
+      "version": "1.0.18",
+      "versionDate": "2026-11-18T09:50:55Z",
+      "versionDescription": "Melding bij een nieuwe versie (net als de TV-app)",
+      "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.18/VenWatch-iOS.ipa",
+      "size": 16405646
     }
   ],
   "news": []
