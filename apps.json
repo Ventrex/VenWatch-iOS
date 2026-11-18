@@ -19,6 +19,15 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "1.0.16",
+          "buildVersion": "16",
+          "date": "2026-11-18T04:51:02Z",
+          "localizedDescription": "Netflix-look: hero met trailer, zijbalk, titelpagina, audio/ondertitels-paneel",
+          "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.16/VenWatch-iOS.ipa",
+          "size": 16375072,
+          "minOSVersion": "15.0"
+        },
+        {
           "version": "1.0.15",
           "buildVersion": "15",
           "date": "2026-11-18T04:32:03Z",
@@ -34,11 +43,11 @@
           "NSLocalNetworkUsageDescription": "Om je VenWatch-server thuis te bereiken."
         }
       },
-      "version": "1.0.15",
-      "versionDate": "2026-11-18T04:32:03Z",
-      "versionDescription": "SideStore/AltStore-bron met automatische updates + app-icoon",
-      "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.15/VenWatch-iOS.ipa",
-      "size": 16217944
+      "version": "1.0.16",
+      "versionDate": "2026-11-18T04:51:02Z",
+      "versionDescription": "Netflix-look: hero met trailer, zijbalk, titelpagina, audio/ondertitels-paneel",
+      "downloadURL": "https://github.com/Ventrex/VenWatch-iOS/releases/download/v1.0.16/VenWatch-iOS.ipa",
+      "size": 16375072
     }
   ],
   "news": []
