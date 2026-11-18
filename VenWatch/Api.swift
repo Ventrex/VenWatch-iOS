@@ -98,6 +98,7 @@ struct Item: Hashable {
     var match: Int? = nil
     var age: String = ""
     var mine: String = ""        // watchlist / watched / leeg
+    var genres: [Int] = []       // TMDB-genre-id's (als de server ze meestuurt)
     var uid: String { "\(type)-\(id)" }
 
     static func from(_ j: JSON) -> Item? {
@@ -110,6 +111,9 @@ struct Item: Hashable {
         it.reason = j.s("reason")
         it.age = j.s("age_label")
         it.mine = j.s("my_status")
+        if let g = j["genre_ids"] as? [Int] { it.genres = g }
+        else if let g = j["genres"] as? [JSON] { it.genres = g.map { $0.i("id") }.filter { $0 > 0 } }
+        else if let g = j["genres"] as? [Int] { it.genres = g }
         if let pl = j.o("play") {
             let s = pl.i("s"), e = pl.i("e")
             if s > 0 { it.season = s }
@@ -125,4 +129,15 @@ struct Item: Hashable {
         var seen = Set<String>()
         return a.compactMap(from).filter { seen.insert($0.uid).inserted }
     }
+}
+
+/// Past deze tip bij de sfeer van de titel waar hij op gebaseerd is? (Home Alone → geen kerst-horror)
+func moodFits(seed: Set<Int>, _ it: Item) -> Bool {
+    guard !seed.isEmpty, !it.genres.isEmpty else { return true }
+    let dark: Set<Int> = [27, 53, 80, 10752, 9648]          // horror, thriller, misdaad, oorlog, mysterie
+    let light: Set<Int> = [10751, 16, 35, 10762, 12, 14]    // familie, animatie, komedie, kids, avontuur, fantasy
+    let g = Set(it.genres)
+    if !seed.contains(27) && g.contains(27) { return false }                      // nooit horror bij een niet-horror
+    if !seed.isDisjoint(with: light) && seed.isDisjoint(with: dark) && !g.isDisjoint(with: dark) { return false }
+    return !seed.isDisjoint(with: g)                                               // minstens één genre gemeen
 }

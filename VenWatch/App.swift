@@ -288,6 +288,7 @@ struct TopBar: View {
         Menu {
             Text(me.o("user")?.s("display_name") ?? "")
             Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
+            ThemeMenu()
             Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
         } label: {
             HStack(spacing: 4) {
@@ -359,27 +360,24 @@ struct HomeView: View {
     @State private var badges: [String: String] = [:]
     @State private var loaded = false
     @State private var lastLoad = Date.distantPast
+    @AppStorage("theme") private var themeRaw = "auto"
+
+    var theme: AppTheme { AppTheme.current(themeRaw) }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
-                if !heroItems.isEmpty { HeroCarousel(items: heroItems, badges: badges, active: active) }
-                else if let h = hero { Billboard(item: h) }
-                ForEach(Array(shelves.enumerated()), id: \.offset) { _, s in
-                    switch s.style {
-                    case 1: Top10Row(title: s.title, items: s.items)
-                    case 2: FeaturedRow(title: s.title, items: s.items, continueRow: true, active: active)
-                    case 3: FeaturedRow(title: s.title, items: s.items, active: active)
-                    default: PosterRow(title: s.title, items: s.items)
-                    }
-                }
-                if !loaded { HStack { Spacer(); ProgressView().tint(red); Spacer() }.padding(.top, 80) }
-                else if shelves.isEmpty { Text("Niets te tonen.").foregroundColor(.gray).padding() }
+        Group {
+            if !loaded {
+                HStack { Spacer(); ProgressView().tint(red); Spacer() }.padding(.top, 80).frame(maxHeight: .infinity, alignment: .top)
+            } else if heroItems.isEmpty && shelves.isEmpty {
+                Text("Niets te tonen.").foregroundColor(.gray).padding()
+            } else {
+                // Pagina van balken: bovenaan de tips, daaronder één balk tegelijk actief (vegen omhoog/omlaag)
+                PagerHome(heroItems: heroItems.isEmpty ? (hero.map { [$0] } ?? []) : heroItems, badges: badges,
+                          shelves: shelves, active: active, theme: theme)
             }
-            .padding(.bottom, 40)
         }
-        .refreshable { await reload() }
         .task { if !loaded { await reload() } }
+        .onChange(of: themeRaw) { _ in Task { await reload() } }
         // Elke keer verversen als je hier terugkomt (na een titel of een ander tabblad): nieuwe tips meteen zichtbaar
         .onAppear { if loaded && active { Task { await reload(ifOlderThan: 3) } } }
         .onChange(of: active) { on in if on && loaded { Task { await reload(ifOlderThan: 3) } } }
@@ -405,7 +403,12 @@ struct HomeView: View {
             for (i, sd) in seeds.enumerated() {
                 g.addTask {
                     guard let d = try? await Api.obj("/api/title/\(sd.0)/\(sd.1)") else { return nil }
-                    let items = Item.list(d.a("recommendations") + d.a("similar")).filter { !skip.contains($0.uid) && $0.mine.isEmpty }
+                    // Alleen tips met dezelfde sfeer: "vergelijkbaar" (op trefwoorden) geeft bij Home Alone ook kerst-horror
+                    let seed = Set(d.a("genres").map { $0.i("id") }.filter { $0 > 0 } + ((d["genre_ids"] as? [Int]) ?? []))
+                    let recs = Item.list(d.a("recommendations")).filter { moodFits(seed: seed, $0) }
+                    let sims = Item.list(d.a("similar")).filter { !$0.genres.isEmpty && moodFits(seed: seed, $0) }
+                    let items = Item.list([]) + (recs + sims).reduce(into: [Item]()) { acc, x in if !acc.contains(where: { $0.uid == x.uid }) { acc.append(x) } }
+                        .filter { !skip.contains($0.uid) && $0.mine.isEmpty }
                     guard items.count >= 4 else { return nil }
                     let verb = sd.3 == "watched" ? "keek" : "op je lijst zette"
                     return (i, ShelfData(title: "Omdat je \(sd.2) \(verb)", items: Array(items.prefix(20))))
@@ -428,33 +431,38 @@ struct HomeView: View {
         let because = await HomeView.becauseRows(myList, kind: nil, skip: skip)
         let c = Item.list((await cont)?.a("items") ?? [])
         var rec = Item.list(h.a("recommendations"))
-        var rows: [ShelfData] = []
-        // Bovenaan: tips die passen bij wat je eerder keek (nieuw profiel: op basis van je eerste titels)
         if rec.isEmpty, let first = because.first { rec = first.items }
-        rows.append(ShelfData(title: "Top-keuzes voor jou", items: rec, style: 3))
+        // Thema (Kerst …): de bijpassende thema-rij van de server bovenaan, en die titels ook in de tips
+        let th = theme
+        let themeRows = h.a("themes").filter { t in th != .off && th.words.contains { "\(t.s("name")) \(t.s("key"))".lowercased().contains($0) } }
+        let themeItems = themeRows.flatMap { Item.list($0.a("items")) }
+        var rows: [ShelfData] = []
         if !c.isEmpty { rows.append(ShelfData(title: "Verder kijken", items: c, style: 2)) }
-        let recIds = Set(rec.map { $0.uid })
-        for b in because { rows.append(ShelfData(title: b.title, items: b.items.filter { !recIds.contains($0.uid) })) }
-        rows.append(ShelfData(title: "Top 10 films in Nederland", items: Item.list((await t1)?.a("items") ?? []), style: 1))
+        for t in themeRows { rows.append(ShelfData(title: "\(t.s("emoji")) \(t.s("name"))".trimmingCharacters(in: .whitespaces), items: Item.list(t.a("items")))) }
+        for b in because { rows.append(ShelfData(title: b.title, items: b.items)) }
+        rows.append(ShelfData(title: "Meer tips voor jou", items: rec))
         rows.append(ShelfData(title: "Mijn lijst", items: Item.list(h.a("watchlist"))))
-        rows.append(ShelfData(title: "Top 10 series in Nederland", items: Item.list((await t2)?.a("items") ?? []), style: 1))
         for b in h.a("because") { rows.append(ShelfData(title: b.s("title"), items: Item.list(b.a("items")))) }
         for t in h.a("themes") { rows.append(ShelfData(title: "\(t.s("emoji")) \(t.s("name"))".trimmingCharacters(in: .whitespaces), items: Item.list(t.a("items")))) }
         rows.append(ShelfData(title: "Wat je gezin kijkt", items: Item.list(h.a("activity"))))
         var seen = Set<String>()
-        shelves = rows.filter { !$0.items.isEmpty && seen.insert($0.title).inserted }
+        var built = rows.filter { !$0.items.isEmpty && seen.insert($0.title).inserted }
         // Bovenaan: een handvol afwisselende tips (uit verschillende rijen, films en series door elkaar)
         let top1 = Item.list((await t1)?.a("items") ?? []), top2 = Item.list((await t2)?.a("items") ?? [])
         var bd: [String: String] = [:]
         for (k, it) in top1.prefix(10).enumerated() { bd[it.uid] = "#\(k + 1) in films vandaag" }
         for (k, it) in top2.prefix(10).enumerated() { bd[it.uid] = "#\(k + 1) in series vandaag" }
         badges = bd
-        var pools: [[Item]] = [rec]
+        var pools: [[Item]] = themeItems.isEmpty ? [rec] : [themeItems, rec]
         pools += because.map { $0.items }
         pools += [top1, top2]
         pools += h.a("themes").map { Item.list($0.a("items")) }
         pools += h.a("because").map { Item.list($0.a("items")) }
         heroItems = variedPicks(pools, n: 7, skip: Set(c.map { $0.uid }))
+        // Wat al bovenaan wisselt niet nog eens als eerste in "Meer tips"
+        let heroIds = Set(heroItems.map { $0.uid })
+        built = built.map { r in r.title == "Meer tips voor jou" ? ShelfData(title: r.title, items: r.items.filter { !heroIds.contains($0.uid) }, style: r.style) : r }
+        shelves = built.filter { !$0.items.isEmpty }
         var feat = rec
         if let b = h.o("billboard"), let bi = Item.from(b) { feat.insert(bi, at: 0) }
         Api.saveFeatured(feat)
@@ -482,7 +490,7 @@ struct HomeView: View {
         let picks = (mine + extra).filter { $0.uid != hero?.uid && !heroIds.contains($0.uid) }
         var rows: [ShelfData] = []
         if !c.isEmpty { rows.append(ShelfData(title: "Verder kijken", items: c, style: 2)) }
-        rows.append(ShelfData(title: "Top-keuzes voor jou", items: Array(picks.prefix(20))))
+        rows.append(ShelfData(title: "Meer tips voor jou", items: Array(picks.prefix(20))))
         rows.append(ShelfData(title: k == "tv" ? "Top 10 series in Nederland" : "Top 10 films in Nederland", items: topItems, style: 1))
         rows.append(ShelfData(title: "Mijn lijst", items: Item.list(h.a("watchlist")).filter { $0.type == k }))
         let myList = (try? await Api.obj("/api/list"))?.a("items") ?? []

@@ -56,36 +56,72 @@ struct TrailerView: UIViewRepresentable {
         let c = WKWebViewConfiguration()
         c.allowsInlineMediaPlayback = true
         c.mediaTypesRequiringUserActionForPlayback = []
+        c.userContentController.add(context.coordinator, name: "vw")
         let w = WKWebView(frame: .zero, configuration: c)
         w.isOpaque = false
-        w.backgroundColor = .black
-        w.scrollView.backgroundColor = .black
+        w.backgroundColor = .clear
+        w.scrollView.backgroundColor = .clear
         w.scrollView.isScrollEnabled = false
         w.isUserInteractionEnabled = false
+        w.alpha = 0                      // pas zichtbaar als de trailer echt speelt
+        context.coordinator.web = w
         return w
     }
 
     func updateUIView(_ w: WKWebView, context: Context) {
-        let sig = "\(key)|\(muted)"
-        guard context.coordinator.loaded != sig else { return }
-        context.coordinator.loaded = sig
+        let co = context.coordinator
+        if co.key == key {
+            if co.muted != muted { co.muted = muted; w.evaluateJavaScript(muted ? "p&&p.mute()" : "p&&p.unMute()", completionHandler: nil) }
+            return
+        }
+        co.key = key; co.muted = muted
+        w.alpha = 0
         let origin = Api.base.isEmpty ? "https://venwatch.app" : Api.base
-        let src = "https://www.youtube-nocookie.com/embed/\(key)?autoplay=1&mute=\(muted ? 1 : 0)&controls=0&playsinline=1&loop=1&playlist=\(key)&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&origin=\(origin)"
         let html = """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>html,body{margin:0;background:#000;overflow:hidden;height:100%}
-        iframe{position:absolute;top:50%;left:50%;width:100vw;height:56.25vw;min-height:100vh;min-width:177.78vh;transform:translate(-50%,-50%) scale(1.32);border:0;pointer-events:none}</style>
-        </head><body><iframe src="\(src)" allow="autoplay; encrypted-media"></iframe></body></html>
+        <style>html,body{margin:0;background:transparent;overflow:hidden;height:100%}
+        #p{position:absolute;top:50%;left:50%;width:100vw;height:56.25vw;min-height:100vh;min-width:177.78vh;transform:translate(-50%,-50%) scale(1.32);border:0;pointer-events:none}</style>
+        </head><body><div id="p"></div>
+        <script>
+        var p=null;
+        function say(m){try{window.webkit.messageHandlers.vw.postMessage(m)}catch(e){}}
+        function onYouTubeIframeAPIReady(){
+          p=new YT.Player('p',{videoId:'\(key)',host:'https://www.youtube-nocookie.com',
+            playerVars:{autoplay:1,mute:1,controls:0,playsinline:1,loop:1,playlist:'\(key)',modestbranding:1,rel:0,iv_load_policy:3,disablekb:1,fs:0,origin:'\(origin)'},
+            events:{onReady:function(e){\(muted ? "" : "e.target.unMute();")e.target.playVideo()},
+                    onStateChange:function(e){if(e.data===1)say('playing');if(e.data===0)say('ended')},
+                    onError:function(e){say('error:'+e.data)}}});
+        }
+        setTimeout(function(){say('timeout')},9000);
+        </script><script src="https://www.youtube.com/iframe_api"></script></body></html>
         """
         w.loadHTMLString(html, baseURL: URL(string: origin))
     }
 
     static func dismantleUIView(_ w: WKWebView, coordinator: Coord) {
+        w.configuration.userContentController.removeScriptMessageHandler(forName: "vw")
         w.loadHTMLString("", baseURL: nil)   // geluid meteen stoppen
     }
 
     func makeCoordinator() -> Coord { Coord() }
-    final class Coord { var loaded = "" }
+
+    final class Coord: NSObject, WKScriptMessageHandler {
+        var key = ""
+        var muted = true
+        var playing = false
+        weak var web: WKWebView?
+        func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+            let msg = (m.body as? String) ?? ""
+            if msg == "playing" {
+                playing = true
+                UIView.animate(withDuration: 0.8) { self.web?.alpha = 1 }
+            } else if msg.hasPrefix("error") || (msg == "timeout" && !playing) {
+                // bv. leeftijdsgrens of insluiten niet toegestaan: gewoon de achtergrondfoto laten staan
+                web?.alpha = 0
+                web?.loadHTMLString("", baseURL: nil)
+            }
+        }
+    }
 }
 
 /// Knop om het geluid van een trailer aan/uit te zetten
@@ -152,6 +188,7 @@ struct HeroCarousel: View {
     let items: [Item]
     var badges: [String: String] = [:]
     var active = true
+    var themeEmoji = ""
     @Environment(\.horizontalSizeClass) var hs
     @State private var i = 0
     @State private var brief = Brief()
@@ -232,6 +269,7 @@ struct HeroCarousel: View {
             HStack(spacing: 6) {
                 BrandMark(size: big ? 20 : 16)
                 Text(it.type == "tv" ? "SERIE" : "FILM").font(.system(size: big ? 13 : 11, weight: .bold)).kerning(4).foregroundColor(Color(white: 0.85))
+                if !themeEmoji.isEmpty { Text(themeEmoji).font(.system(size: big ? 16 : 13)) }
             }
             if let l = brief.logo {
                 Img(url: Api.img(l, "w500"), fit: true)
@@ -338,6 +376,7 @@ struct SideRail: View {
             Menu {
                 Text(me.o("user")?.s("display_name") ?? "")
                 Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
+                ThemeMenu()
                 Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
             } label: { AvatarView(p: me.o("user") ?? [:], size: 36) }
             .padding(.bottom, 22)
