@@ -41,17 +41,47 @@ func resolveEpisode(_ id: Int, _ s: Int?, _ e: Int?) async -> (Int, Int, String?
 func edge(_ hs: UserInterfaceSizeClass?) -> CGFloat { hs == .regular ? 40 : 14 }
 
 /// Plaatje dat zijn vak vult (of past, voor logo's)
+/// Plaatjes met eigen geheugen en een tweede poging (AsyncImage op iOS 15 breekt laden vaak af bij scrollen/verversen)
+final class ImageCache {
+    static let shared = ImageCache()
+    let mem = NSCache<NSURL, UIImage>()
+    let session: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.urlCache = URLCache(memoryCapacity: 40_000_000, diskCapacity: 300_000_000)
+        c.requestCachePolicy = .returnCacheDataElseLoad
+        c.timeoutIntervalForRequest = 20
+        return URLSession(configuration: c)
+    }()
+    func load(_ u: URL) async -> UIImage? {
+        if let i = mem.object(forKey: u as NSURL) { return i }
+        for attempt in 0..<3 {
+            if let (d, r) = try? await session.data(from: u), (r as? HTTPURLResponse)?.statusCode ?? 200 < 400, let i = UIImage(data: d) {
+                mem.setObject(i, forKey: u as NSURL)
+                return i
+            }
+            if Task.isCancelled { return nil }
+            try? await Task.sleep(nanoseconds: UInt64(400_000_000 * (attempt + 1)))
+        }
+        return nil
+    }
+}
+
 struct Img: View {
     let url: URL?
     var fit = false
+    @State private var img: UIImage?
+    @State private var shownFor: URL?
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.25))) { ph in
-            switch ph {
-            case .success(let i):
-                if fit { i.resizable().scaledToFit() } else { i.resizable().scaledToFill() }
-            default:
-                if fit { Color.clear } else { panel }
-            }
+        ZStack {
+            if let i = img, shownFor == url {
+                if fit { Image(uiImage: i).resizable().scaledToFit().transition(.opacity) }
+                else { Image(uiImage: i).resizable().scaledToFill().transition(.opacity) }
+            } else if fit { Color.clear } else { panel }
+        }
+        .task(id: url) {
+            guard let u = url else { img = nil; shownFor = nil; return }
+            if let c = ImageCache.shared.mem.object(forKey: u as NSURL) { img = c; shownFor = u; return }
+            if let i = await ImageCache.shared.load(u) { withAnimation(.easeOut(duration: 0.25)) { img = i; shownFor = u } }
         }
     }
 }

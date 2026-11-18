@@ -189,7 +189,7 @@ struct DetailView: View {
                 Text(curName).font(.headline)
             }
             ForEach(Array(episodes.sorted { $0.i("n") < $1.i("n") }.enumerated()), id: \.offset) { _, e in
-                EpisodeRow(e: e, resumePct: resumePct(e.i("n")), download: (e["aired"] as? Bool ?? true) ? AnyView(
+                EpisodeRow(e: e, resumePct: resumePct(e.i("n")), fallback: d.s("backdrop").isEmpty ? nil : d.s("backdrop"), download: (e["aired"] as? Bool ?? true) ? AnyView(
                     DownloadButton(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), epName: e.s("name"), poster: d.s("poster"), backdrop: e.s("still").isEmpty ? d.s("backdrop") : e.s("still"), compact: true)
                 ) : nil) {
                     if e["aired"] as? Bool ?? true { play = PlayReq(type: "tv", tmdb: id, title: title, season: season, episode: e.i("n"), logo: logoPath) }
@@ -352,6 +352,7 @@ struct TabStrip: View {
 struct EpisodeRow: View {
     let e: JSON
     let resumePct: Int?
+    var fallback: String? = nil      // geen beeld uit de aflevering? dan een achtergrond van de serie
     var download: AnyView? = nil
     let onPlay: () -> Void
     @Environment(\.horizontalSizeClass) var hs
@@ -361,7 +362,7 @@ struct EpisodeRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 ZStack(alignment: .bottom) {
-                    Img(url: Api.img(e.s("still"), "w300")).frame(width: w, height: w * 9 / 16).clipped()
+                    Img(url: Api.img(e.s("still").isEmpty ? fallback : e.s("still"), e.s("still").isEmpty ? "w780" : "w300")).frame(width: w, height: w * 9 / 16).clipped()
                     Image(systemName: "play.circle").font(.system(size: 30)).foregroundColor(.white)
                         .shadow(color: .black, radius: 4).frame(width: w, height: w * 9 / 16)
                     if let p = resumePct { ProgressLine(pct: p) }

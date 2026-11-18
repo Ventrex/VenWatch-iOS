@@ -320,7 +320,8 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
             self.tracksReady = true
             self.autoPick()
             self.addExternalSubs()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.refreshTracks() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.refreshTracks(); self.applySubDelay() }
+            self.applySubDelay()
         }
     }
 
@@ -417,6 +418,20 @@ final class PlayerModel: NSObject, ObservableObject, VLCMediaPlayerDelegate {
         let sel = NSSelectorFromString("setTextRendererFontSize:")
         if player.responds(to: sel) { player.perform(sel, with: NSNumber(value: SubPrefs.vlcSize)) }
     }
+    // MARK: Ondertitels gelijk laten lopen (per film/serie onthouden)
+    @Published var subDelay: Double = 0          // seconden; negatief = eerder
+    var delayKey: String { "subdelay-\(type)-\(tmdb)" }
+    func applySubDelay() {
+        subDelay = UserDefaults.standard.double(forKey: delayKey)
+        player.currentVideoSubTitleDelay = Int(subDelay * 1_000_000)
+    }
+    func shiftSubs(_ by: Double) {
+        let v = by == 0 ? 0 : (subDelay + by * 1).rounded(toPlaces: 2)
+        subDelay = max(-30, min(30, v))
+        UserDefaults.standard.set(subDelay, forKey: delayKey)
+        player.currentVideoSubTitleDelay = Int(subDelay * 1_000_000)
+    }
+
     func setSubSize(_ i: Int) {
         SubPrefs.size = i
         applySubSize()
@@ -487,7 +502,11 @@ struct VLCView: UIViewRepresentable {
 
 // MARK: - Scherm met de knoppen
 
-enum PlayerPanel { case audio, speed, sources, episodes }
+enum PlayerPanel { case audio, subs, speed, sources, episodes }
+
+extension Double {
+    func rounded(toPlaces p: Int) -> Double { let f = pow(10, Double(p)); return (self * f).rounded() / f }
+}
 
 struct PlayerScreen: View {
     let req: PlayReq
@@ -605,7 +624,8 @@ struct PlayerScreen: View {
                             Spacer(minLength: 8)
                             if let nx = m.nextEp { IconCtl(icon: "forward.end", label: "Volgende aflevering", big: big) { m.playEpisode(nx.0, nx.1) } }
                             if m.type == "tv" { IconCtl(icon: "rectangle.stack", label: "Afleveringen", big: big) { panel = .episodes } }
-                            IconCtl(icon: "text.bubble", label: "Audio en ondertitels", big: big) { m.refreshTracks(); panel = .audio }
+                            IconCtl(icon: "speaker.wave.2", label: "Audio", big: big) { m.refreshTracks(); panel = .audio }
+                            IconCtl(icon: "captions.bubble", label: "Ondertitels", big: big) { m.refreshTracks(); panel = .subs }
                             IconCtl(icon: "speedometer", label: "Snelheid", big: big) { panel = .speed }
                             if !m.local { IconCtl(icon: "arrow.triangle.2.circlepath", label: "Andere bron (\(m.sources.count))", big: big) { panel = .sources } }
                             IconCtl(icon: "lock.open", label: "Vergrendelen", big: big) { locked = true; showUnlock = true; poke() }
@@ -661,11 +681,11 @@ struct PlayerScreen: View {
     // MARK: Panelen
 
     @ViewBuilder func panelView(_ p: PlayerPanel) -> some View {
-        if p == .audio {
+        if p == .audio || p == .subs {
             // Zoals Netflix: een grijs paneel rechtsonder, het beeld blijft zichtbaar
             ZStack(alignment: .bottomTrailing) {
                 Color.black.opacity(0.35).ignoresSafeArea().onTapGesture { panel = nil; poke() }
-                AudioSubsPanel(m: m, done: { panel = nil; poke() })
+                AudioSubsPanel(m: m, subsMode: p == .subs, done: { panel = nil; poke() })
                     .padding(.trailing, hs == .regular ? 28 : 10).padding(.bottom, hs == .regular ? 96 : 70).padding(.leading, 10)
             }
         } else {
@@ -678,7 +698,7 @@ struct PlayerScreen: View {
             Color.black.opacity(0.88).ignoresSafeArea().onTapGesture { panel = nil; poke() }
             Group {
                 switch p {
-                case .audio: AudioSubsPanel(m: m, done: { panel = nil })
+                case .audio, .subs: AudioSubsPanel(m: m, subsMode: p == .subs, done: { panel = nil })
                 case .speed: SpeedPanel(m: m) { panel = nil }
                 case .sources: SourcesPanel(m: m) { panel = nil }
                 case .episodes: EpisodesPanel(m: m) { panel = nil }
@@ -700,7 +720,6 @@ struct IconCtl: View {
             HStack(spacing: 8) {
                 Image(systemName: icon).font(.system(size: big ? 24 : 21, weight: .regular))
                     .frame(width: big ? 30 : 32, height: big ? 40 : 32)
-                if big { Text(label).font(.system(size: 15, weight: .semibold)).lineLimit(1) }
             }
             .foregroundColor(.white).contentShape(Rectangle())
         }
@@ -757,6 +776,7 @@ struct Scrubber: View {
 
 struct AudioSubsPanel: View {
     @ObservedObject var m: PlayerModel
+    var subsMode = false
     var done: () -> Void = {}
     @Environment(\.horizontalSizeClass) var hs
 
@@ -766,11 +786,23 @@ struct AudioSubsPanel: View {
     var body: some View {
         let big = hs == .regular
         VStack(alignment: .leading, spacing: big ? 22 : 14) {
-            HStack(alignment: .top, spacing: big ? 80 : 26) {
+            if !subsMode {
                 column("Audio", audioItems, m.audioSel, big: big) { m.pickAudio($0) }
+            } else {
                 column("Ondertitels", subItems, m.subSel, big: big) { m.pickSub($0) }
+                HStack(spacing: 8) {
+                    Text("Timing").font(.system(size: big ? 15 : 13, weight: .semibold)).foregroundColor(soft).padding(.trailing, 4)
+                    pill("−0,5s") { m.shiftSubs(-0.5) }
+                    pill("−0,1s") { m.shiftSubs(-0.1) }
+                    Text(m.subDelay == 0 ? "0,0s" : String(format: "%@%.1fs", m.subDelay > 0 ? "+" : "", m.subDelay).replacingOccurrences(of: ".", with: ","))
+                        .font(.system(size: big ? 15 : 13, weight: .bold).monospacedDigit()).foregroundColor(.white).frame(minWidth: 50)
+                    pill("+0,1s") { m.shiftSubs(0.1) }
+                    pill("+0,5s") { m.shiftSubs(0.5) }
+                    if m.subDelay != 0 { pill("Reset") { m.shiftSubs(0) } }
+                }
+                Text("Ondertitels te laat? Tik op −. Te vroeg? Tik op +.").font(.system(size: big ? 13 : 11)).foregroundColor(soft)
             }
-            HStack(spacing: 8) {
+            if subsMode { HStack(spacing: 8) {
                 Text("Lettergrootte").font(.system(size: big ? 15 : 13, weight: .semibold)).foregroundColor(soft).padding(.trailing, 4)
                 ForEach(0..<3, id: \.self) { i in
                     Button { m.setSubSize(i) } label: {
@@ -780,11 +812,19 @@ struct AudioSubsPanel: View {
                             .foregroundColor(SubPrefs.size == i ? .black : .white)
                     }.buttonStyle(.plain)
                 }
-            }
+            } }
         }
         .padding(.horizontal, big ? 44 : 20).padding(.vertical, big ? 34 : 20)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.15)))
-        .frame(maxWidth: big ? 820 : .infinity, alignment: .trailing)
+        .frame(maxWidth: big ? 620 : .infinity, alignment: .trailing)
+    }
+
+    func pill(_ t: String, _ a: @escaping () -> Void) -> some View {
+        Button(action: a) {
+            Text(t).font(.system(size: hs == .regular ? 14 : 12, weight: .semibold))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Capsule().fill(Color.white.opacity(0.12))).foregroundColor(.white)
+        }.buttonStyle(.plain)
     }
 
     func column(_ title: String, _ items: [(Int32, String)], _ sel: Int32, big: Bool, _ pick: @escaping (Int32) -> Void) -> some View {
