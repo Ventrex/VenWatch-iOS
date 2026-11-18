@@ -1,13 +1,15 @@
 name: iOS-app bouwen
 
-# Bouwt de iOS-app (ongetekend .ipa voor SideStore/AltStore, die tekent zelf) en zet hem op de site:
-# download/VenWatch-iOS.ipa
+# Bouwt de iOS-app (ongetekend .ipa voor SideStore/AltStore, die tekent zelf):
+#  - versie 1.0.<run>, als GitHub-release (vast adres per versie)
+#  - download/VenWatch-iOS.ipa (altijd de nieuwste)
+#  - apps.json bijgewerkt: de SideStore/AltStore-bron, dan krijg je updates vanzelf in SideStore
 on:
   push:
     branches: [main]
-    paths-ignore: ['download/**']
+    paths-ignore: ['download/**', 'apps.json', 'README.md']
   pull_request:
-    paths-ignore: ['download/**']
+    paths-ignore: ['download/**', 'apps.json', 'README.md']
   workflow_dispatch:
 
 permissions:
@@ -33,6 +35,7 @@ jobs:
           set -o pipefail
           xcodebuild -workspace VenWatch.xcworkspace -scheme VenWatch -configuration Release -sdk iphoneos \
             -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="1.0.${{ github.run_number }}" CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             clean build 2>&1 | tee build.log | tail -n 40 || {
             grep -E "error:" build.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
             exit 1; }
@@ -46,13 +49,28 @@ jobs:
         with:
           name: VenWatch-iOS
           path: out/VenWatch-iOS.ipa
-      - name: IPA op de site zetten
+      - name: Release maken en bron (apps.json) bijwerken
         if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: 1.0.${{ github.run_number }}
+          BUILD: ${{ github.run_number }}
+          NOTES: ${{ github.event.head_commit.message }}
         run: |
+          NOTE=$(printf '%s' "${NOTES:-Nieuwe versie}" | head -n 1)
+          gh release create "v$VERSION" out/VenWatch-iOS.ipa --title "VenWatch $VERSION" --notes "$NOTE" --repo "${{ github.repository }}" \
+            || gh release upload "v$VERSION" out/VenWatch-iOS.ipa --clobber --repo "${{ github.repository }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/v$VERSION/VenWatch-iOS.ipa"
+          SIZE=$(stat -f%z out/VenWatch-iOS.ipa)
           mkdir -p download
-          cp out/VenWatch-iOS.ipa download/VenWatch-iOS.ipa
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add download
-          git commit -m "iOS-app ${{ github.run_number }} [skip ci]" || exit 0
-          for i in 1 2 3; do git pull --rebase origin main && git push && break; sleep 5; done
+          for i in 1 2 3; do
+            git pull --rebase origin main
+            cp out/VenWatch-iOS.ipa download/VenWatch-iOS.ipa
+            python3 .github/scripts/update-source.py "$VERSION" "$BUILD" "$URL" "$SIZE" "$NOTE"
+            git add download apps.json
+            git commit -m "iOS-app $VERSION [skip ci]" || exit 0
+            git push && break
+            git reset --hard HEAD~1; sleep 5
+          done

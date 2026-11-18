@@ -1,0 +1,40 @@
+{
+  "name": "VenWatch",
+  "identifier": "cc.ventrex.venwatch.source",
+  "subtitle": "De eigen films-en-series-app van Ventrex",
+  "description": "VenWatch voor iPhone en iPad: tips, kijklijsten en afspelen via je eigen VenWatch/VenRelay (VLC-speler, speelt ook mkv).",
+  "iconURL": "https://raw.githubusercontent.com/Ventrex/VenWatch-iOS/main/icon.png",
+  "website": "https://github.com/Ventrex/VenWatch-iOS",
+  "tintColor": "#E50914",
+  "apps": [
+    {
+      "name": "VenWatch",
+      "bundleIdentifier": "cc.ventrex.venwatch",
+      "developerName": "Ventrex",
+      "subtitle": "Films en series, op jouw manier",
+      "localizedDescription": "Tips, kijklijsten en afspelen via je eigen VenWatch-server. VLC-speler: speelt mkv, DTS en vrijwel alles; kies zelf bron, audiospoor en ondertitels.",
+      "iconURL": "https://raw.githubusercontent.com/Ventrex/VenWatch-iOS/main/icon.png",
+      "tintColor": "#E50914",
+      "category": "entertainment",
+      "screenshots": [],
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-11-14T21:03:36Z",
+          "localizedDescription": "Eerste versie.",
+          "downloadURL": "https://raw.githubusercontent.com/Ventrex/VenWatch-iOS/main/download/VenWatch-iOS.ipa",
+          "size": 15991469,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSLocalNetworkUsageDescription": "Om je VenWatch-server thuis te bereiken."
+        }
+      }
+    }
+  ],
+  "news": []
+}
