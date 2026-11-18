@@ -84,7 +84,7 @@ struct LoginView: View {
             .disabled(busy)
             if offline && dl.items.contains(where: { $0.state == "done" }) {
                 Button { showDl = true } label: {
-                    Label("Gedownloade titels kijken", systemImage: "arrow.down.circle").bold().frame(maxWidth: .infinity).padding(14)
+                    Label("Gedownloade titels kijken", systemImage: "arrow.down.circle").font(.body.bold()).frame(maxWidth: .infinity).padding(14)
                         .background(Color(white: 0.2)).foregroundColor(.white).cornerRadius(5)
                 }
             }

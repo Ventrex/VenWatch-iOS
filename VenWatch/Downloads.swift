@@ -128,9 +128,10 @@ final class Downloads: NSObject, ObservableObject, URLSessionDownloadDelegate {
             }
         }
         let ext = ["mkv", "mp4", "avi", "m4v", "ts"].first { url.path.lowercased().hasSuffix(".\($0)") } ?? "mkv"
+        let gotSubs = subs
         await MainActor.run {
             guard let i = self.items.firstIndex(where: { $0.id == id }) else { return }
-            self.items[i].subs = subs
+            self.items[i].subs = gotSubs
             self.items[i].file = "\(id).\(ext)"
             self.items[i].quality = [b.s("quality"), b.s("size")].filter { !$0.isEmpty }.joined(separator: " · ")
             self.items[i].state = "downloading"
