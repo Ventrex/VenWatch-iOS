@@ -15,7 +15,7 @@ struct VenWatchApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            Root().preferredColorScheme(.dark)
+            Root().preferredColorScheme(.dark).modifier(UpdateCheck())
         }
     }
 }
@@ -665,4 +665,65 @@ struct AllView: View {
             .background(Color.black.ignoresSafeArea())
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
     }
+}
+
+
+// MARK: - Nieuwe versie? (zelfde bron als SideStore: apps.json in de VenWatch-iOS-repo)
+
+struct UpdateCheck: ViewModifier {
+    @State private var newVersion: String?
+    @State private var ipa: String?
+    @Environment(\.scenePhase) var phase
+    static let source = "https://raw.githubusercontent.com/Ventrex/VenWatch-iOS/main/apps.json"
+
+    func body(content: Content) -> some View {
+        content
+            .task { await check() }
+            .onChange(of: phase) { p in if p == .active { Task { await check() } } }
+            .alert("Nieuwe versie", isPresented: Binding(get: { newVersion != nil }, set: { if !$0 { newVersion = nil } })) {
+                Button("Bijwerken") { update() }
+                Button("Later", role: .cancel) { skip() }
+            } message: {
+                Text("VenWatch \(newVersion ?? "") staat klaar. Bijwerken via SideStore?")
+            }
+    }
+
+    static func parts(_ v: String) -> [Int] { v.split(separator: ".").map { Int($0) ?? 0 } }
+    static func newer(_ a: String, than b: String) -> Bool {
+        let x = parts(a), y = parts(b)
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    func check() async {
+        let mine = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+        guard let url = URL(string: Self.source + "?t=\(Int(Date().timeIntervalSince1970 / 600))"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let app = (j["apps"] as? [[String: Any]])?.first,
+              let v = (app["versions"] as? [[String: Any]])?.first,
+              let latest = v["version"] as? String else { return }
+        guard Self.newer(latest, than: mine), UserDefaults.standard.string(forKey: "skipVersion") != latest else { return }
+        ipa = v["downloadURL"] as? String
+        newVersion = latest
+    }
+
+    func update() {
+        // SideStore (of AltStore) installeert hem meteen; anders de download in Safari
+        let enc = (ipa ?? "").addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+        let web = ipa.flatMap { URL(string: $0) }
+        func tryOpen(_ schemes: [String]) {
+            guard let s = schemes.first, let u = URL(string: "\(s)://install?url=\(enc)") else {
+                if let w = web { UIApplication.shared.open(w) }
+                return
+            }
+            UIApplication.shared.open(u) { ok in if !ok { tryOpen(Array(schemes.dropFirst())) } }
+        }
+        tryOpen(["sidestore", "altstore"])
+    }
+
+    func skip() { if let v = newVersion { UserDefaults.standard.set(v, forKey: "skipVersion") } }
 }
