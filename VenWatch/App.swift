@@ -639,6 +639,7 @@ struct MyView: View {
                     }.pickerStyle(.segmented).frame(maxWidth: 420).padding(.horizontal, edge(hs))
                     .onChange(of: subSize) { SubPrefs.size = $0 }
                 }
+                ExtrasSection()
                 VStack(alignment: .leading, spacing: 14) {
                     Button { onSwitch() } label: { Label("Profiel wisselen", systemImage: "person.2") }
                     Button(role: .destructive) { Task { _ = try? await Api.post("/api/auth/logout"); onLogout() } } label: { Label("Uitloggen", systemImage: "rectangle.portrait.and.arrow.right") }
